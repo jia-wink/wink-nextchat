@@ -11,7 +11,7 @@ import LoadingIcon from "../icons/three-dots.svg";
 import { getCSSVar, useMobileScreen } from "../utils";
 
 import dynamic from "next/dynamic";
-import { Path, SlotID } from "../constant";
+import { Path, ServiceProvider, SlotID } from "../constant";
 import { ErrorBoundary } from "./error";
 
 import { getISOLang, getLang } from "../locales";
@@ -29,7 +29,11 @@ import { getClientConfig } from "../config/client";
 import { type ClientApi, getClientApi } from "../client/api";
 import { useAccessStore } from "../store";
 import clsx from "clsx";
-import { initializeMcpSystem, isMcpEnabled } from "../mcp/actions";
+import {
+  getOpenClawAuthState,
+  loginOpenClaw,
+} from "../client/platforms/openclaw";
+import { OpenClawAuthModal } from "./openclaw-auth-modal";
 
 export function Loading(props: { noLogo?: boolean }) {
   return (
@@ -220,6 +224,81 @@ function Screen() {
   );
 }
 
+function OpenClawStartupAuthGate() {
+  const accessStore = useAccessStore();
+  const [dismissed, setDismissed] = useState(false);
+  const [checkedStartupAuth, setCheckedStartupAuth] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+
+  useEffect(() => {
+    if (
+      !accessStore.openclawEnabled ||
+      accessStore.openclawUser ||
+      dismissed ||
+      checkedStartupAuth
+    ) {
+      return;
+    }
+
+    getOpenClawAuthState()
+      .then((auth) => {
+        accessStore.update((access) => {
+          access.openclawUser = auth.username ?? "";
+          access.openclawAllowedAgents = auth.agents;
+        });
+        if (!auth.authenticated) {
+          setShowModal(true);
+        }
+      })
+      .finally(() => setCheckedStartupAuth(true));
+  }, [
+    accessStore.openclawEnabled,
+    accessStore.openclawUser,
+    checkedStartupAuth,
+    dismissed,
+  ]);
+
+  if (!showModal) {
+    return null;
+  }
+
+  const close = () => {
+    setDismissed(true);
+    setShowModal(false);
+  };
+
+  return (
+    <OpenClawAuthModal
+      onClose={close}
+      onGuest={() => {
+        accessStore.update((access) => {
+          access.provider =
+            access.provider === ServiceProvider.OpenClaw
+              ? ServiceProvider.OpenAI
+              : access.provider;
+        });
+        close();
+      }}
+      onLogin={async (username, password) => {
+        const auth = await loginOpenClaw(username, password);
+        accessStore.update((access) => {
+          access.provider = ServiceProvider.OpenClaw;
+          access.openclawUser = auth.username ?? "";
+          access.openclawAllowedAgents = auth.agents;
+          if (
+            auth.agents.length > 0 &&
+            !auth.agents.includes("*") &&
+            !auth.agents.includes(access.openclawAgentId)
+          ) {
+            access.openclawAgentId = auth.agents[0];
+          }
+        });
+        close();
+      }}
+    />
+  );
+}
+
 export function useLoadData() {
   const config = useAppConfig();
 
@@ -242,20 +321,6 @@ export function Home() {
   useEffect(() => {
     console.log("[Config] got config from build time", getClientConfig());
     useAccessStore.getState().fetch();
-
-    const initMcp = async () => {
-      try {
-        const enabled = await isMcpEnabled();
-        if (enabled) {
-          console.log("[MCP] initializing...");
-          await initializeMcpSystem();
-          console.log("[MCP] initialized");
-        }
-      } catch (err) {
-        console.error("[MCP] failed to initialize:", err);
-      }
-    };
-    initMcp();
   }, []);
 
   if (!useHasHydrated()) {
@@ -266,6 +331,7 @@ export function Home() {
     <ErrorBoundary>
       <Router>
         <Screen />
+        <OpenClawStartupAuthGate />
       </Router>
     </ErrorBoundary>
   );

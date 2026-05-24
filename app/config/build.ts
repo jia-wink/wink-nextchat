@@ -11,6 +11,7 @@ export const getBuildConfig = () => {
   const buildMode = process.env.BUILD_MODE ?? "standalone";
   const isApp = !!process.env.BUILD_APP;
   const version = "v" + tauriConfig.package.version;
+  const displayVersion = process.env.NEXTCHAT_DISPLAY_VERSION ?? version;
 
   const commitInfo = (() => {
     try {
@@ -36,9 +37,11 @@ export const getBuildConfig = () => {
 
   return {
     version,
+    displayVersion,
     ...commitInfo,
     buildMode,
     isApp,
+    enableMcp: process.env.ENABLE_MCP === "true",
     template: process.env.DEFAULT_INPUT_TEMPLATE ?? DEFAULT_INPUT_TEMPLATE,
   };
 };

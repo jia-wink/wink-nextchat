@@ -1,0 +1,9 @@
+{
+  "id": "nextchat",
+  "channels": ["nextchat"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

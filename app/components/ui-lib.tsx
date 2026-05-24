@@ -116,6 +116,7 @@ interface ModalProps {
   children?: any;
   actions?: React.ReactNode[];
   defaultMax?: boolean;
+  className?: string;
   footer?: React.ReactNode;
   onClose?: () => void;
 }
@@ -141,7 +142,7 @@ export function Modal(props: ModalProps) {
     <div
       className={clsx(styles["modal-container"], {
         [styles["modal-container-max"]]: isMax,
-      })}
+      }, props.className)}
     >
       <div className={styles["modal-header"]}>
         <div className={styles["modal-title"]}>{props.title}</div>
@@ -164,16 +165,18 @@ export function Modal(props: ModalProps) {
 
       <div className={styles["modal-content"]}>{props.children}</div>
 
-      <div className={styles["modal-footer"]}>
-        {props.footer}
-        <div className={styles["modal-actions"]}>
-          {props.actions?.map((action, i) => (
-            <div key={i} className={styles["modal-action"]}>
-              {action}
-            </div>
-          ))}
+      {(props.footer || props.actions?.length) && (
+        <div className={styles["modal-footer"]}>
+          {props.footer}
+          <div className={styles["modal-actions"]}>
+            {props.actions?.map((action, i) => (
+              <div key={i} className={styles["modal-action"]}>
+                {action}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -273,6 +276,7 @@ export function PasswordInput(
   props: HTMLProps<HTMLInputElement> & { aria?: string },
 ) {
   const [visible, setVisible] = useState(false);
+  const { aria, ...inputProps } = props;
   function changeVisibility() {
     setVisible(!visible);
   }
@@ -280,13 +284,13 @@ export function PasswordInput(
   return (
     <div className={"password-input-container"}>
       <IconButton
-        aria={props.aria}
+        aria={aria}
         icon={visible ? <EyeIcon /> : <EyeOffIcon />}
         onClick={changeVisibility}
         className={"password-eye"}
       />
       <input
-        {...props}
+        {...inputProps}
         type={visible ? "text" : "password"}
         className={"password-input"}
       />

@@ -8,7 +8,7 @@
     "withGlobalTauri": true
   },
   "package": {
-    "productName": "NextChat",
+    "productName": "Wink NextChat",
     "version": "2.16.1"
   },
   "tauri": {
@@ -60,7 +60,7 @@
     "bundle": {
       "active": true,
       "category": "DeveloperTool",
-      "copyright": "2023, Zhang Yifei All Rights Reserved.",
+      "copyright": "2026 Jia Wink. All Rights Reserved.",
       "deb": {
         "depends": []
       },
@@ -72,8 +72,8 @@
         "icons/icon.icns",
         "icons/icon.ico"
       ],
-      "identifier": "com.yida.chatgpt.next.web",
-      "longDescription": "NextChat is a cross-platform ChatGPT client, including Web/Win/Linux/OSX/PWA.",
+      "identifier": "com.jiawink.winknextchat",
+      "longDescription": "Wink NextChat connects a private OpenClaw gateway with a browser-based multi-model chat interface.",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
@@ -82,7 +82,7 @@
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "NextChat App",
+      "shortDescription": "Wink NextChat",
       "targets": "all",
       "windows": {
         "certificateThumbprint": null,
@@ -97,7 +97,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/ChatGPTNextWeb/ChatGPT-Next-Web/releases/latest/download/latest.json"
+        "https://github.com/jia-wink/wink-nextchat/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "windows": {
@@ -110,7 +110,7 @@
         "fullscreen": false,
         "height": 600,
         "resizable": true,
-        "title": "NextChat",
+        "title": "Wink NextChat",
         "width": 960,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay"

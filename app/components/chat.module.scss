@@ -300,15 +300,87 @@
 
 .chat-body-main-title {
   cursor: pointer;
+  min-width: 0;
 
   &:hover {
     text-decoration: underline;
   }
 }
 
+.chat-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chat-connection-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  width: fit-content;
+  max-width: min(45vw, 360px);
+  flex-shrink: 0;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.2;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.04);
+  color: rgba(0, 0, 0, 0.7);
+
+  &[data-tone="connected"] {
+    background: rgba(47, 133, 90, 0.12);
+    border-color: rgba(47, 133, 90, 0.2);
+    color: #216746;
+  }
+
+  &[data-tone="connecting"],
+  &[data-tone="reconnecting"] {
+    background: rgba(180, 83, 9, 0.12);
+    border-color: rgba(180, 83, 9, 0.2);
+    color: #8b4b0f;
+  }
+
+  &[data-tone="disconnected"] {
+    background: rgba(185, 28, 28, 0.1);
+    border-color: rgba(185, 28, 28, 0.18);
+    color: #a61b1b;
+  }
+}
+
+.chat-connection-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.chat-connection-status-detail {
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media only screen and (max-width: 600px) {
   .chat-body-title {
     text-align: center;
+  }
+
+  .chat-title-row {
+    gap: 8px;
+  }
+
+  .chat-connection-status {
+    max-width: 42vw;
+    padding: 3px 8px;
+  }
+
+  .chat-connection-status-detail {
+    display: none;
   }
 }
 

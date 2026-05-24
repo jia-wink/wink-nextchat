@@ -92,6 +92,18 @@ declare global {
       AI302_URL?: string;
       AI302_API_KEY?: string;
 
+      OPENCLAW_ENABLED?: string;
+      OPENCLAW_GATEWAY_URL?: string;
+      OPENCLAW_BRIDGE_URL?: string;
+      OPENCLAW_AUTH_TOKEN?: string;
+      OPENCLAW_SHARED_SECRET?: string;
+      OPENCLAW_ACCOUNT_ID?: string;
+      OPENCLAW_DEFAULT_AGENT_ID?: string;
+      OPENCLAW_CONFIG_PATH?: string;
+      NEXTCHAT_PUBLIC_BASE_URL?: string;
+      NEXTCHAT_UPLOAD_DIR?: string;
+      NEXTCHAT_UPLOAD_MAX_BYTES?: string;
+
       // custom template for preprocessing user input
       DEFAULT_INPUT_TEMPLATE?: string;
 
@@ -168,6 +180,7 @@ export const getServerSideConfig = () => {
   const isChatGLM = !!process.env.CHATGLM_API_KEY;
   const isSiliconFlow = !!process.env.SILICONFLOW_API_KEY;
   const isAI302 = !!process.env.AI302_API_KEY;
+  const isOpenClaw = process.env.OPENCLAW_ENABLED === "1";
   // const apiKeyEnvVar = process.env.OPENAI_API_KEY ?? "";
   // const apiKeys = apiKeyEnvVar.split(",").map((v) => v.trim());
   // const randomIndex = Math.floor(Math.random() * apiKeys.length);
@@ -255,6 +268,19 @@ export const getServerSideConfig = () => {
     ai302Url: process.env.AI302_URL,
     ai302ApiKey: getApiKey(process.env.AI302_API_KEY),
 
+    isOpenClaw,
+    openclawEnabled: isOpenClaw,
+    openclawGatewayUrl: process.env.OPENCLAW_GATEWAY_URL,
+    openclawBridgeUrl: process.env.OPENCLAW_BRIDGE_URL,
+    openclawAuthToken: process.env.OPENCLAW_AUTH_TOKEN,
+    openclawSharedSecret: process.env.OPENCLAW_SHARED_SECRET,
+    openclawAccountId: process.env.OPENCLAW_ACCOUNT_ID,
+    openclawDefaultAgentId: process.env.OPENCLAW_DEFAULT_AGENT_ID,
+    openclawConfigPath: process.env.OPENCLAW_CONFIG_PATH,
+    nextchatPublicBaseUrl: process.env.NEXTCHAT_PUBLIC_BASE_URL,
+    nextchatUploadDir: process.env.NEXTCHAT_UPLOAD_DIR,
+    nextchatUploadMaxBytes: process.env.NEXTCHAT_UPLOAD_MAX_BYTES,
+
     gtmId: process.env.GTM_ID,
     gaId: process.env.GA_ID || DEFAULT_GA_ID,
 
@@ -265,7 +291,7 @@ export const getServerSideConfig = () => {
     proxyUrl: process.env.PROXY_URL,
     isVercel: !!process.env.VERCEL,
 
-    hideUserApiKey: !!process.env.HIDE_USER_API_KEY,
+    hideUserApiKey: process.env.HIDE_USER_API_KEY === "1",
     disableGPT4,
     hideBalanceQuery: !process.env.ENABLE_BALANCE_QUERY,
     disableFastLink: !!process.env.DISABLE_FAST_LINK,

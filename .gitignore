@@ -27,6 +27,9 @@ yarn-error.log*
 
 # local env files
 .env*.local
+.env.production
+.env.development
+.env.test
 
 # vercel
 .vercel
@@ -46,6 +49,9 @@ dev
 *.key.pub
 
 masks.json
+*.zip
+*.tar
+*.tar.gz
 
 # mcp config
 app/mcp/mcp_config.json

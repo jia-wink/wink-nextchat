@@ -47,7 +47,6 @@ import StyleIcon from "../icons/palette.svg";
 import PluginIcon from "../icons/plugin.svg";
 import ShortcutkeyIcon from "../icons/shortcutkey.svg";
 import McpToolIcon from "../icons/tool.svg";
-import HeadphoneIcon from "../icons/headphone.svg";
 import {
   BOT_HELLO,
   ChatMessage,
@@ -117,16 +116,19 @@ import { ExportMessageModal } from "./exporter";
 import { getClientConfig } from "../config/client";
 import { useAllModels } from "../utils/hooks";
 import { ClientApi, MultimodalContent } from "../client/api";
+import {
+  getOpenClawAuthState,
+  useOpenClawEventSync,
+} from "../client/platforms/openclaw";
 import { createTTSPlayer } from "../utils/audio";
 import { MsEdgeTTS, OUTPUT_FORMAT } from "../utils/ms_edge_tts";
 
 import { isEmpty } from "lodash-es";
 import { getModelProvider } from "../utils/model";
-import { RealtimeChat } from "@/app/components/realtime-chat";
 import clsx from "clsx";
-import { getAvailableClientsCount, isMcpEnabled } from "../mcp/actions";
 
 const localStorage = safeLocalStorage();
+const isMcpEnabledClient = () => Boolean(getClientConfig()?.enableMcp);
 
 const ttsPlayer = createTTSPlayer();
 
@@ -141,12 +143,9 @@ const MCPAction = () => {
 
   useEffect(() => {
     const checkMcpStatus = async () => {
-      const enabled = await isMcpEnabled();
+      const enabled = isMcpEnabledClient();
       setMcpEnabled(enabled);
-      if (enabled) {
-        const count = await getAvailableClientsCount();
-        setCount(count);
-      }
+      setCount(0);
     };
     checkMcpStatus();
   }, []);
@@ -502,7 +501,6 @@ export function ChatActions(props: {
   uploading: boolean;
   setShowShortcutKeyModal: React.Dispatch<React.SetStateAction<boolean>>;
   setUserInput: (input: string) => void;
-  setShowChatSidePanel: React.Dispatch<React.SetStateAction<boolean>>;
 }) {
   const config = useAppConfig();
   const navigate = useNavigate();
@@ -529,6 +527,9 @@ export function ChatActions(props: {
   const currentModel = session.mask.modelConfig.model;
   const currentProviderName =
     session.mask.modelConfig?.providerName || ServiceProvider.OpenAI;
+  const canAttachImages =
+    currentProviderName === ServiceProvider.OpenClaw ||
+    isVisionModel(currentModel);
   const allModels = useAllModels();
   const models = useMemo(() => {
     const filteredModels = allModels.filter((m) => m.available);
@@ -570,7 +571,7 @@ export function ChatActions(props: {
   const isMobileScreen = useMobileScreen();
 
   useEffect(() => {
-    const show = isVisionModel(currentModel);
+    const show = canAttachImages;
     setShowUploadImage(show);
     if (!show) {
       props.setAttachImages([]);
@@ -594,7 +595,7 @@ export function ChatActions(props: {
           : nextModel.name,
       );
     }
-  }, [chatStore, currentModel, models, session]);
+  }, [canAttachImages, chatStore, currentModel, models, props, session]);
 
   return (
     <div className={styles["chat-input-actions"]}>
@@ -691,14 +692,31 @@ export function ChatActions(props: {
               value: `${m.name}@${m?.provider?.providerName}`,
             }))}
             onClose={() => setShowModelSelector(false)}
-            onSelection={(s) => {
+            onSelection={async (s) => {
               if (s.length === 0) return;
               const [model, providerName] = getModelProvider(s[0]);
+              if (providerName === ServiceProvider.OpenClaw) {
+                const auth = await getOpenClawAuthState();
+                if (!auth.authenticated) {
+                  showToast("OpenClaw login is required for OpenClaw models");
+                  return;
+                }
+              }
               chatStore.updateTargetSession(session, (session) => {
                 session.mask.modelConfig.model = model as ModelType;
                 session.mask.modelConfig.providerName =
                   providerName as ServiceProvider;
                 session.mask.syncGlobalConfig = false;
+                if (
+                  providerName === ServiceProvider.OpenClaw &&
+                  !session.openclaw?.agentId
+                ) {
+                  session.openclaw = {
+                    ...session.openclaw,
+                    agentId: useAccessStore.getState().openclawAgentId,
+                    channel: "nextchat",
+                  };
+                }
               });
               if (providerName == "ByteDance") {
                 const selectedModel = models.find(
@@ -834,15 +852,7 @@ export function ChatActions(props: {
         )}
         {!isMobileScreen && <MCPAction />}
       </>
-      <div className={styles["chat-input-actions-end"]}>
-        {config.realtimeConfig.enable && (
-          <ChatAction
-            onClick={() => props.setShowChatSidePanel(true)}
-            text={"Realtime Chat"}
-            icon={<HeadphoneIcon />}
-          />
-        )}
-      </div>
+      <div className={styles["chat-input-actions-end"]}></div>
     </div>
   );
 }
@@ -991,6 +1001,7 @@ function _Chat() {
 
   const chatStore = useChatStore();
   const session = chatStore.currentSession();
+  useOpenClawEventSync(session);
   const config = useAppConfig();
   const fontSize = config.fontSize;
   const fontFamily = config.fontFamily;
@@ -1440,6 +1451,47 @@ function _Chat() {
 
   const autoFocus = !isMobileScreen; // wont auto focus on mobile screen
   const showMaxIcon = !isMobileScreen && !clientConfig?.isApp;
+  const openclawConnection = session.openclaw;
+  const showOpenClawConnectionStatus =
+    session.mask.modelConfig.providerName === ServiceProvider.OpenClaw &&
+    !!openclawConnection?.sessionKey;
+  const openClawConnectionStatusMeta = useMemo(() => {
+    switch (openclawConnection?.connectionStatus) {
+      case "connected":
+        return {
+          label: "已连接",
+          tone: "connected",
+          detail: openclawConnection.connectionMessage,
+        };
+      case "connecting":
+        return {
+          label: "连接中",
+          tone: "connecting",
+          detail: openclawConnection.connectionMessage,
+        };
+      case "reconnecting":
+        return {
+          label: "重连中",
+          tone: "reconnecting",
+          detail: openclawConnection.connectionMessage,
+        };
+      case "disconnected":
+        return {
+          label: "已断开",
+          tone: "disconnected",
+          detail: openclawConnection.connectionMessage,
+        };
+      default:
+        return {
+          label: "连接中",
+          tone: "connecting",
+          detail: openclawConnection?.connectionMessage,
+        };
+    }
+  }, [
+    openclawConnection?.connectionMessage,
+    openclawConnection?.connectionStatus,
+  ]);
 
   useCommand({
     fill: setUserInput,
@@ -1511,8 +1563,14 @@ function _Chat() {
 
   const handlePaste = useCallback(
     async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const currentModel = chatStore.currentSession().mask.modelConfig.model;
-      if (!isVisionModel(currentModel)) {
+      const currentSession = chatStore.currentSession();
+      const currentModel = currentSession.mask.modelConfig.model;
+      const currentProvider =
+        currentSession.mask.modelConfig?.providerName || ServiceProvider.OpenAI;
+      if (
+        currentProvider !== ServiceProvider.OpenClaw &&
+        !isVisionModel(currentModel)
+      ) {
         return;
       }
       const items = (event.clipboardData || window.clipboardData).items;
@@ -1677,8 +1735,6 @@ function _Chat() {
     };
   }, [messages, chatStore, navigate, session]);
 
-  const [showChatSidePanel, setShowChatSidePanel] = useState(false);
-
   return (
     <>
       <div className={styles.chat} key={session.id}>
@@ -1699,14 +1755,31 @@ function _Chat() {
           <div
             className={clsx("window-header-title", styles["chat-body-title"])}
           >
-            <div
-              className={clsx(
-                "window-header-main-title",
-                styles["chat-body-main-title"],
+            <div className={styles["chat-title-row"]}>
+              <div
+                className={clsx(
+                  "window-header-main-title",
+                  styles["chat-body-main-title"],
+                )}
+                onClickCapture={() => setIsEditingMessage(true)}
+              >
+                {!session.topic ? DEFAULT_TOPIC : session.topic}
+              </div>
+              {showOpenClawConnectionStatus && (
+                <div
+                  className={styles["chat-connection-status"]}
+                  data-tone={openClawConnectionStatusMeta.tone}
+                  title={openClawConnectionStatusMeta.detail}
+                >
+                  <span className={styles["chat-connection-status-dot"]} />
+                  <span>{openClawConnectionStatusMeta.label}</span>
+                  {openClawConnectionStatusMeta.detail && (
+                    <span className={styles["chat-connection-status-detail"]}>
+                      {openClawConnectionStatusMeta.detail}
+                    </span>
+                  )}
+                </div>
               )}
-              onClickCapture={() => setIsEditingMessage(true)}
-            >
-              {!session.topic ? DEFAULT_TOPIC : session.topic}
             </div>
             <div className="window-header-sub-title">
               {Locale.Chat.SubTitle(session.messages.length)}
@@ -1868,7 +1941,17 @@ function _Chat() {
                             </div>
                             {!isUser && (
                               <div className={styles["chat-model-name"]}>
-                                {message.model}
+                                {session.mask.modelConfig.providerName ===
+                                ServiceProvider.OpenClaw
+                                  ? `${
+                                      session.openclaw?.agentId ||
+                                      accessStore.openclawAgentId ||
+                                      "main"
+                                    } · ${
+                                      message.model ||
+                                      session.mask.modelConfig.model
+                                    }`
+                                  : message.model}
                               </div>
                             )}
 
@@ -2066,7 +2149,6 @@ function _Chat() {
                 }}
                 setShowShortcutKeyModal={setShowShortcutKeyModal}
                 setUserInput={setUserInput}
-                setShowChatSidePanel={setShowChatSidePanel}
               />
               <label
                 className={clsx(styles["chat-input-panel-inner"], {
@@ -2125,23 +2207,6 @@ function _Chat() {
                 />
               </label>
             </div>
-          </div>
-          <div
-            className={clsx(styles["chat-side-panel"], {
-              [styles["mobile"]]: isMobileScreen,
-              [styles["chat-side-panel-show"]]: showChatSidePanel,
-            })}
-          >
-            {showChatSidePanel && (
-              <RealtimeChat
-                onClose={() => {
-                  setShowChatSidePanel(false);
-                }}
-                onStartVoice={async () => {
-                  console.log("start voice");
-                }}
-              />
-            )}
           </div>
         </div>
       </div>

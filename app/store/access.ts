@@ -18,6 +18,7 @@ import {
   CHATGLM_BASE_URL,
   SILICONFLOW_BASE_URL,
   AI302_BASE_URL,
+  OPENCLAW_GATEWAY_URL,
 } from "../constant";
 import { getHeaders } from "../client/api";
 import { getClientConfig } from "../config/client";
@@ -61,12 +62,21 @@ const DEFAULT_SILICONFLOW_URL = isApp
   : ApiPath.SiliconFlow;
 
 const DEFAULT_AI302_URL = isApp ? AI302_BASE_URL : ApiPath["302.AI"];
+const DEFAULT_OPENCLAW_URL = isApp ? OPENCLAW_GATEWAY_URL : ApiPath.OpenClaw;
 
 const DEFAULT_ACCESS_STATE = {
   accessCode: "",
   useCustomConfig: false,
 
   provider: ServiceProvider.OpenAI,
+
+  openclawEnabled: false,
+  openclawBridgeUrl: DEFAULT_OPENCLAW_URL,
+  openclawGatewayUrl: OPENCLAW_GATEWAY_URL,
+  openclawAuthToken: "",
+  openclawAgentId: "main",
+  openclawUser: "",
+  openclawAllowedAgents: [] as string[],
 
   // openai
   openaiUrl: DEFAULT_OPENAI_URL,
@@ -226,6 +236,10 @@ export const useAccessStore = createPersistStore(
       return ensure(get(), ["siliconflowApiKey"]);
     },
 
+    isValidOpenClaw() {
+      return ensure(get(), ["openclawBridgeUrl", "openclawGatewayUrl"]);
+    },
+
     isAuthorized() {
       this.fetch();
 
@@ -284,7 +298,7 @@ export const useAccessStore = createPersistStore(
   }),
   {
     name: StoreKey.Access,
-    version: 2,
+    version: 4,
     migrate(persistedState, version) {
       if (version < 2) {
         const state = persistedState as {
@@ -295,6 +309,28 @@ export const useAccessStore = createPersistStore(
         };
         state.openaiApiKey = state.token;
         state.azureApiVersion = "2023-08-01-preview";
+      }
+
+      if (version < 3) {
+        const state = persistedState as typeof DEFAULT_ACCESS_STATE;
+        state.openclawEnabled = state.openclawEnabled ?? false;
+        state.openclawBridgeUrl = state.openclawBridgeUrl ?? DEFAULT_OPENCLAW_URL;
+        state.openclawGatewayUrl =
+          state.openclawGatewayUrl ?? OPENCLAW_GATEWAY_URL;
+        state.openclawAuthToken = state.openclawAuthToken ?? "";
+        state.openclawAgentId = state.openclawAgentId ?? "main";
+      }
+
+      if (version < 4) {
+        const state = persistedState as typeof DEFAULT_ACCESS_STATE & {
+          openclawAccountId?: string;
+          openclawDefaultAgentId?: string;
+        };
+        state.openclawAgentId =
+          state.openclawAgentId ??
+          state.openclawDefaultAgentId ??
+          state.openclawAccountId ??
+          "main";
       }
 
       return persistedState as any;

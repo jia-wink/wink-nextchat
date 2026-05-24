@@ -25,6 +25,7 @@ import { XAIApi } from "./platforms/xai";
 import { ChatGLMApi } from "./platforms/glm";
 import { SiliconflowApi } from "./platforms/siliconflow";
 import { Ai302Api } from "./platforms/ai302";
+import { OpenClawApi } from "./platforms/openclaw";
 
 export const ROLES = ["system", "user", "assistant"] as const;
 export type MessageRole = (typeof ROLES)[number];
@@ -141,6 +142,9 @@ export class ClientApi {
       case ModelProvider.GeminiPro:
         this.llm = new GeminiProApi();
         break;
+      case ModelProvider.OpenClaw:
+        this.llm = new OpenClawApi();
+        break;
       case ModelProvider.Claude:
         this.llm = new ClaudeApi();
         break;
@@ -197,8 +201,7 @@ export class ClientApi {
       .concat([
         {
           from: "human",
-          value:
-            "Share from [NextChat]: https://github.com/Yidadaa/ChatGPT-Next-Web",
+          value: "Share from [书嘎 AI 助理]",
         },
       ]);
     // 敬告二开开发者们，为了开源大模型的发展，请不要修改上述消息，此消息用于后续数据清洗使用
@@ -369,6 +372,8 @@ export function getClientApi(provider: ServiceProvider): ClientApi {
   switch (provider) {
     case ServiceProvider.Google:
       return new ClientApi(ModelProvider.GeminiPro);
+    case ServiceProvider.OpenClaw:
+      return new ClientApi(ModelProvider.OpenClaw);
     case ServiceProvider.Anthropic:
       return new ClientApi(ModelProvider.Claude);
     case ServiceProvider.Baidu:

@@ -36,10 +36,11 @@ import { ModelConfig, ModelType, useAppConfig } from "./config";
 import { useAccessStore } from "./access";
 import { collectModelsWithDefaultModel } from "../utils/model";
 import { createEmptyMask, Mask } from "./mask";
-import { executeMcpAction, getAllTools, isMcpEnabled } from "../mcp/actions";
 import { extractMcpJson, isMcpJson } from "../mcp/utils";
+import { getClientConfig } from "../config/client";
 
 const localStorage = safeLocalStorage();
+const isMcpEnabledClient = () => Boolean(getClientConfig()?.enableMcp);
 
 export type ChatMessageTool = {
   id: string;
@@ -63,6 +64,29 @@ export type ChatMessage = RequestMessage & {
   tools?: ChatMessageTool[];
   audio_url?: string;
   isMcpResponse?: boolean;
+  clientMessageId?: string;
+  serverMessageId?: string;
+  serverMessageIds?: string[];
+  status?: "pending" | "streaming" | "completed" | "failed";
+  error?: string;
+  timestamp?: string;
+  openclawAggregated?: boolean;
+  openclawBatching?: boolean;
+  openclawPendingRequests?: number;
+};
+
+export type OpenClawSessionMeta = {
+  sessionKey?: string;
+  conversationId?: string;
+  agentId?: string;
+  channel?: string;
+  createdAt?: string;
+  connectionStatus?:
+    | "connecting"
+    | "connected"
+    | "reconnecting"
+    | "disconnected";
+  connectionMessage?: string;
 };
 
 export function createMessage(override: Partial<ChatMessage>): ChatMessage {
@@ -93,6 +117,7 @@ export interface ChatSession {
   clearContextIndex?: number;
 
   mask: Mask;
+  openclaw?: OpenClawSessionMeta;
 }
 
 export const DEFAULT_TOPIC = Locale.Store.DefaultTopic;
@@ -101,10 +126,63 @@ export const BOT_HELLO: ChatMessage = createMessage({
   content: Locale.Store.BotHello,
 });
 
+function detectBrowserLabel(userAgent: string): string | undefined {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("edg/")) return "Edge";
+  if (ua.includes("chrome/") && !ua.includes("edg/")) return "Chrome";
+  if (ua.includes("firefox/")) return "Firefox";
+  if (ua.includes("safari/") && !ua.includes("chrome/")) return "Safari";
+  return undefined;
+}
+
+function detectDeviceLabel(userAgent: string): string | undefined {
+  const androidMatch = userAgent.match(
+    /Android[\d.\s]*;\s*([^;()]+?)(?:\s+Build\/|\))/i,
+  );
+  if (androidMatch?.[1]?.trim()) {
+    return androidMatch[1].trim();
+  }
+  if (/iPhone/i.test(userAgent)) return "iPhone";
+  if (/iPad/i.test(userAgent)) return "iPad";
+  if (/Macintosh|Mac OS X/i.test(userAgent)) return "Mac";
+  if (/Windows NT/i.test(userAgent)) return "Windows PC";
+  if (/Linux/i.test(userAgent)) return "Linux PC";
+  return undefined;
+}
+
+function buildClientLabel(): string | undefined {
+  if (typeof navigator === "undefined") {
+    return undefined;
+  }
+
+  const userAgent = navigator.userAgent || "";
+  const deviceLabel = detectDeviceLabel(userAgent);
+  const browserLabel = detectBrowserLabel(userAgent);
+  const label = [deviceLabel, browserLabel].filter(Boolean).join(" ");
+  return label || undefined;
+}
+
+function formatSessionTimestamp(date: Date): string {
+  const pad = (value: number) => value.toString().padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function buildDefaultSessionTopic(): string {
+  const accessStore = useAccessStore.getState();
+  if (accessStore.provider !== ServiceProvider.OpenClaw) {
+    return DEFAULT_TOPIC;
+  }
+
+  const clientLabel = buildClientLabel();
+  const timestamp = formatSessionTimestamp(new Date());
+  return clientLabel ? `${clientLabel} ${timestamp}` : timestamp;
+}
+
 function createEmptySession(): ChatSession {
+  const accessStore = useAccessStore.getState();
   return {
     id: nanoid(),
-    topic: DEFAULT_TOPIC,
+    topic: buildDefaultSessionTopic(),
     memoryPrompt: "",
     messages: [],
     stat: {
@@ -116,6 +194,11 @@ function createEmptySession(): ChatSession {
     lastSummarizeIndex: 0,
 
     mask: createEmptyMask(),
+    openclaw: {
+      channel: "nextchat",
+      agentId: accessStore.openclawAgentId || "main",
+      connectionStatus: "connecting",
+    },
   };
 }
 
@@ -202,7 +285,200 @@ function fillTemplateWith(input: string, modelConfig: ModelConfig) {
   return output;
 }
 
+function isOpenClawManagedContext(
+  modelConfig: Pick<ModelConfig, "providerName">,
+) {
+  return modelConfig.providerName === ServiceProvider.OpenClaw;
+}
+
+function isEmptyAssistantContent(message: ChatMessage): boolean {
+  return typeof message.content === "string" && message.content.trim().length === 0;
+}
+
+function findActiveOpenClawAssistant(messages: ChatMessage[]): ChatMessage | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    if (!message.openclawAggregated) continue;
+    if (!message.openclawBatching) return undefined;
+    if (message.status === "failed") return undefined;
+    if (message.streaming || message.status === "streaming" || message.status === "pending") {
+      return message;
+    }
+    if (isEmptyAssistantContent(message)) {
+      return message;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+const OPENCLAW_NEXTCHAT_AGGREGATE_MS = 60_000;
+
+type PendingOpenClawBatch = {
+  session: ChatSession;
+  modelConfig: ModelConfig;
+  botMessage: ChatMessage;
+  userMessages: ChatMessage[];
+  timer?: ReturnType<typeof setTimeout>;
+};
+
+const pendingOpenClawBatches = new Map<string, PendingOpenClawBatch>();
+
+function combineOpenClawUserMessages(messages: ChatMessage[]): ChatMessage {
+  const latest = messages[messages.length - 1];
+  if (latest && messages.length <= 1) {
+    return latest;
+  }
+  if (!latest) {
+    return createMessage({
+      role: "user",
+      content: "",
+      clientMessageId: nanoid(),
+      status: "pending",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return createMessage({
+    ...latest,
+    id: latest.id,
+    role: "user",
+    content: messages
+      .map((message) => getMessageTextContent(message).trim())
+      .filter(Boolean)
+      .join("\n"),
+    clientMessageId: messages
+      .map((message) => message.clientMessageId)
+      .filter(Boolean)
+      .join(","),
+    timestamp: latest.timestamp ?? new Date().toISOString(),
+  });
+}
+
+function flushOpenClawBatch(sessionId: string) {
+  const batch = pendingOpenClawBatches.get(sessionId);
+  if (!batch) return;
+  pendingOpenClawBatches.delete(sessionId);
+
+  const store = useChatStore.getState();
+  const { session, modelConfig, botMessage } = batch;
+  const api: ClientApi = getClientApi(modelConfig.providerName);
+  const combinedUserMessage = combineOpenClawUserMessages(batch.userMessages);
+
+  botMessage.openclawBatching = false;
+  botMessage.openclawPendingRequests = 1;
+  botMessage.streaming = true;
+  botMessage.status = "streaming";
+  store.updateTargetSession(session, (draft) => {
+    draft.messages = draft.messages.concat();
+  });
+
+  api.llm.chat({
+    messages: [combinedUserMessage],
+    config: { ...modelConfig, stream: true },
+    onUpdate(message) {
+      botMessage.streaming = true;
+      botMessage.status = "streaming";
+      if (message) {
+        botMessage.content = message;
+      }
+      store.updateTargetSession(session, (draft) => {
+        draft.messages = draft.messages.concat();
+      });
+    },
+    async onFinish(message) {
+      botMessage.openclawPendingRequests = 0;
+      botMessage.streaming = false;
+      botMessage.status = "completed";
+      botMessage.openclawBatching = false;
+      if (message) {
+        botMessage.content = message;
+        botMessage.date = new Date().toLocaleString();
+        botMessage.timestamp = new Date().toISOString();
+        store.onNewMessage(botMessage, session);
+      } else if (isEmptyAssistantContent(botMessage)) {
+        store.updateTargetSession(session, (draft) => {
+          draft.messages = draft.messages.filter((item) => item.id !== botMessage.id);
+        });
+      }
+      ChatControllerPool.remove(session.id, botMessage.id);
+    },
+    onBeforeTool(tool: ChatMessageTool) {
+      (botMessage.tools = botMessage?.tools || []).push(tool);
+      store.updateTargetSession(session, (draft) => {
+        draft.messages = draft.messages.concat();
+      });
+    },
+    onAfterTool(tool: ChatMessageTool) {
+      botMessage?.tools?.forEach((t, i, tools) => {
+        if (tool.id == t.id) {
+          tools[i] = { ...tool };
+        }
+      });
+      store.updateTargetSession(session, (draft) => {
+        draft.messages = draft.messages.concat();
+      });
+    },
+    onError(error) {
+      const isAborted = error.message?.includes?.("aborted");
+      botMessage.content +=
+        "\n\n" +
+        prettyObject({
+          error: true,
+          message: error.message,
+        });
+      botMessage.streaming = false;
+      botMessage.status = "failed";
+      botMessage.error = error.message;
+      botMessage.isError = !isAborted;
+      botMessage.openclawBatching = false;
+      botMessage.openclawPendingRequests = 0;
+      store.updateTargetSession(session, (draft) => {
+        draft.messages = draft.messages.concat();
+      });
+      ChatControllerPool.remove(session.id, botMessage.id);
+
+      console.error("[Chat] failed ", error);
+    },
+    onController(controller) {
+      ChatControllerPool.addController(session.id, botMessage.id, controller);
+    },
+  });
+}
+
+function enqueueOpenClawBatch(params: {
+  session: ChatSession;
+  modelConfig: ModelConfig;
+  userMessage: ChatMessage;
+  botMessage: ChatMessage;
+}) {
+  const existing = pendingOpenClawBatches.get(params.session.id);
+  const batch =
+    existing ??
+    {
+      session: params.session,
+      modelConfig: params.modelConfig,
+      botMessage: params.botMessage,
+      userMessages: [],
+    };
+
+  batch.session = params.session;
+  batch.modelConfig = params.modelConfig;
+  batch.botMessage = params.botMessage;
+  batch.userMessages.push(params.userMessage);
+  if (batch.timer) {
+    clearTimeout(batch.timer);
+  }
+  batch.timer = setTimeout(
+    () => flushOpenClawBatch(params.session.id),
+    OPENCLAW_NEXTCHAT_AGGREGATE_MS,
+  );
+  pendingOpenClawBatches.set(params.session.id, batch);
+}
+
 async function getMcpSystemPrompt(): Promise<string> {
+  const { getAllTools } = await import("../mcp/actions");
   const tools = await getAllTools();
 
   let toolsStr = "";
@@ -411,11 +687,14 @@ export const useChatStore = createPersistStore(
       ) {
         const session = get().currentSession();
         const modelConfig = session.mask.modelConfig;
+        const isOpenClawChannel = isOpenClawManagedContext(modelConfig);
 
         // MCP Response no need to fill template
         let mContent: string | MultimodalContent[] = isMcpResponse
           ? content
-          : fillTemplateWith(content, modelConfig);
+          : isOpenClawChannel
+            ? content
+            : fillTemplateWith(content, modelConfig);
 
         if (!isMcpResponse && attachImages && attachImages.length > 0) {
           mContent = [
@@ -431,17 +710,26 @@ export const useChatStore = createPersistStore(
           role: "user",
           content: mContent,
           isMcpResponse,
+          clientMessageId: nanoid(),
+          status: "pending",
+          timestamp: new Date().toISOString(),
         });
 
-        const botMessage: ChatMessage = createMessage({
+        let botMessage: ChatMessage = createMessage({
           role: "assistant",
           streaming: true,
           model: modelConfig.model,
+          clientMessageId: nanoid(),
+          status: "streaming",
+          timestamp: new Date().toISOString(),
+          openclawAggregated: isOpenClawChannel,
+          openclawBatching: isOpenClawChannel,
+          openclawPendingRequests: isOpenClawChannel ? 1 : undefined,
         });
 
-        // get recent messages
-        const recentMessages = await get().getMessagesWithMemory();
-        const sendMessages = recentMessages.concat(userMessage);
+        const sendMessages = isOpenClawChannel
+          ? [userMessage]
+          : (await get().getMessagesWithMemory()).concat(userMessage);
         const messageIndex = session.messages.length + 1;
 
         // save user's and bot's message
@@ -450,11 +738,37 @@ export const useChatStore = createPersistStore(
             ...userMessage,
             content: mContent,
           };
-          session.messages = session.messages.concat([
-            savedUserMessage,
-            botMessage,
-          ]);
+          if (isOpenClawChannel) {
+            const activeBotMessage = findActiveOpenClawAssistant(session.messages);
+            if (activeBotMessage) {
+              activeBotMessage.streaming = true;
+              activeBotMessage.status = "streaming";
+              activeBotMessage.openclawBatching = true;
+              activeBotMessage.openclawPendingRequests =
+                (activeBotMessage.openclawPendingRequests ?? 0) + 1;
+              botMessage = activeBotMessage;
+              session.messages = session.messages
+                .filter((message) => message.id !== activeBotMessage.id)
+                .concat([savedUserMessage, activeBotMessage]);
+              return;
+            }
+          }
+
+          session.messages = session.messages.concat([savedUserMessage, botMessage]);
         });
+
+        if (isOpenClawChannel) {
+          enqueueOpenClawBatch({
+            session,
+            modelConfig,
+            userMessage: {
+              ...userMessage,
+              content: mContent,
+            },
+            botMessage,
+          });
+          return;
+        }
 
         const api: ClientApi = getClientApi(modelConfig.providerName);
         // make request
@@ -463,6 +777,7 @@ export const useChatStore = createPersistStore(
           config: { ...modelConfig, stream: true },
           onUpdate(message) {
             botMessage.streaming = true;
+            botMessage.status = "streaming";
             if (message) {
               botMessage.content = message;
             }
@@ -471,10 +786,45 @@ export const useChatStore = createPersistStore(
             });
           },
           async onFinish(message) {
+            const pendingRequests = Math.max(
+              0,
+              (botMessage.openclawPendingRequests ?? 1) - 1,
+            );
+            botMessage.openclawPendingRequests = isOpenClawChannel
+              ? pendingRequests
+              : undefined;
+            if (isOpenClawChannel && !message && botMessage.status === "completed") {
+              ChatControllerPool.remove(session.id, botMessage.id);
+              return;
+            }
+            if (isOpenClawChannel && !message && pendingRequests > 0) {
+              botMessage.streaming = true;
+              botMessage.status = "streaming";
+              ChatControllerPool.remove(session.id, botMessage.id);
+              get().updateTargetSession(session, (session) => {
+                session.messages = session.messages.concat();
+              });
+              return;
+            }
+            if (
+              isOpenClawChannel &&
+              !message &&
+              isEmptyAssistantContent(botMessage)
+            ) {
+              get().updateTargetSession(session, (session) => {
+                session.messages = session.messages.filter(
+                  (item) => item.id !== botMessage?.id,
+                );
+              });
+              ChatControllerPool.remove(session.id, botMessage.id);
+              return;
+            }
             botMessage.streaming = false;
+            botMessage.status = "completed";
             if (message) {
               botMessage.content = message;
               botMessage.date = new Date().toLocaleString();
+              botMessage.timestamp = new Date().toISOString();
               get().onNewMessage(botMessage, session);
             }
             ChatControllerPool.remove(session.id, botMessage.id);
@@ -504,6 +854,8 @@ export const useChatStore = createPersistStore(
                 message: error.message,
               });
             botMessage.streaming = false;
+            botMessage.status = "failed";
+            botMessage.error = error.message;
             userMessage.isError = !isAborted;
             botMessage.isError = !isAborted;
             get().updateTargetSession(session, (session) => {
@@ -555,7 +907,7 @@ export const useChatStore = createPersistStore(
           (session.mask.modelConfig.model.startsWith("gpt-") ||
             session.mask.modelConfig.model.startsWith("chatgpt-"));
 
-        const mcpEnabled = await isMcpEnabled();
+        const mcpEnabled = isMcpEnabledClient();
         const mcpSystemPrompt = mcpEnabled ? await getMcpSystemPrompt() : "";
 
         var systemPrompts: ChatMessage[] = [];
@@ -665,6 +1017,9 @@ export const useChatStore = createPersistStore(
         const config = useAppConfig.getState();
         const session = targetSession;
         const modelConfig = session.mask.modelConfig;
+        if (isOpenClawManagedContext(modelConfig)) {
+          return;
+        }
         // skip summarize when using dalle3?
         if (isDalle3(modelConfig.model)) {
           return;
@@ -825,7 +1180,7 @@ export const useChatStore = createPersistStore(
 
       /** check if the message contains MCP JSON and execute the MCP action */
       checkMcpJson(message: ChatMessage) {
-        const mcpEnabled = isMcpEnabled();
+        const mcpEnabled = isMcpEnabledClient();
         if (!mcpEnabled) return;
         const content = getMessageTextContent(message);
         if (isMcpJson(content)) {
@@ -834,7 +1189,10 @@ export const useChatStore = createPersistStore(
             if (mcpRequest) {
               console.debug("[MCP Request]", mcpRequest);
 
-              executeMcpAction(mcpRequest.clientId, mcpRequest.mcp)
+              import("../mcp/actions")
+                .then(({ executeMcpAction }) =>
+                  executeMcpAction(mcpRequest.clientId, mcpRequest.mcp),
+                )
                 .then((result) => {
                   console.log("[MCP Response]", result);
                   const mcpResponse =

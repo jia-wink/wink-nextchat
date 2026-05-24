@@ -1,5 +1,5 @@
 {
-  "name": "nextchat",
+  "name": "wink-nextchat",
   "private": false,
   "license": "mit",
   "scripts": {
@@ -18,7 +18,8 @@
     "prepare": "husky install",
     "proxy-dev": "sh ./scripts/init-proxy.sh && proxychains -f ./scripts/proxychains.conf yarn dev",
     "test": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --watch",
-    "test:ci": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --ci"
+    "test:ci": "node --no-warnings --experimental-vm-modules $(yarn bin jest) --ci",
+    "deploy:openclaw:smoke": "bash ./scripts/openclaw-deploy-smoke.sh ./.env.production"
   },
   "dependencies": {
     "@fortaine/fetch-event-source": "^3.0.6",

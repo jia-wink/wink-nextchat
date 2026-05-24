@@ -7,7 +7,6 @@ import CloseIcon from "../icons/close.svg";
 import DeleteIcon from "../icons/delete.svg";
 import RestartIcon from "../icons/reload.svg";
 import EyeIcon from "../icons/eye.svg";
-import GithubIcon from "../icons/github.svg";
 import { List, ListItem, Modal, showToast } from "./ui-lib";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
@@ -16,7 +15,6 @@ import {
   getClientsStatus,
   getClientTools,
   getMcpConfigFromFile,
-  isMcpEnabled,
   pauseMcpServer,
   restartAllClients,
   resumeMcpServer,
@@ -32,6 +30,7 @@ import clsx from "clsx";
 import PlayIcon from "../icons/play.svg";
 import StopIcon from "../icons/pause.svg";
 import { Path } from "../constant";
+import { getClientConfig } from "../config/client";
 
 interface ConfigProperty {
   type: string;
@@ -62,7 +61,7 @@ export function McpMarketPage() {
   // 检查 MCP 是否启用
   useEffect(() => {
     const checkMcpStatus = async () => {
-      const enabled = await isMcpEnabled();
+      const enabled = Boolean(getClientConfig()?.enableMcp);
       setMcpEnabled(enabled);
       if (!enabled) {
         navigate(Path.Home);
@@ -92,9 +91,14 @@ export function McpMarketPage() {
   useEffect(() => {
     const loadPresetServers = async () => {
       if (!mcpEnabled) return;
+      const presetUrl = process.env.NEXT_PUBLIC_MCP_MARKET_URL?.trim();
+      if (!presetUrl) {
+        setPresetServers([]);
+        return;
+      }
       try {
         setLoadingPresets(true);
-        const response = await fetch("https://nextchat.club/mcp/list");
+        const response = await fetch(presetUrl);
         if (!response.ok) {
           throw new Error("Failed to load preset servers");
         }
@@ -543,17 +547,6 @@ export function McpMarketPage() {
                   </span>
                 )}
                 {!loadingStates[server.id] && getServerStatusDisplay(server.id)}
-                {server.repo && (
-                  <a
-                    href={server.repo}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={styles["repo-link"]}
-                    title="Open repository"
-                  >
-                    <GithubIcon />
-                  </a>
-                )}
               </div>
               <div className={styles["tags-container"]}>
                 {server.tags.map((tag, index) => (

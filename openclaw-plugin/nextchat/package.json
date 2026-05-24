@@ -1,0 +1,40 @@
+{
+  "name": "@openclaw/nextchat",
+  "version": "2026.4.11-local.1",
+  "private": true,
+  "description": "OpenClaw NextChat channel plugin",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.4.11"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "setupEntry": "./setup-entry.ts",
+    "channel": {
+      "id": "nextchat",
+      "label": "NextChat",
+      "selectionLabel": "NextChat",
+      "detailLabel": "NextChat Bridge",
+      "docsPath": "/channels/nextchat",
+      "docsLabel": "nextchat",
+      "blurb": "Expose OpenClaw agents through a NextChat bridge.",
+      "systemImage": "message",
+      "order": 20
+    },
+    "install": {
+      "npmSpec": "@openclaw/nextchat",
+      "defaultChoice": "npm",
+      "minHostVersion": ">=2026.4.11"
+    }
+  }
+}

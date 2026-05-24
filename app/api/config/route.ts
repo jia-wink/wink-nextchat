@@ -15,6 +15,14 @@ const DANGER_CONFIG = {
   customModels: serverConfig.customModels,
   defaultModel: serverConfig.defaultModel,
   visionModels: serverConfig.visionModels,
+  openclawEnabled: serverConfig.openclawEnabled,
+  openclawGatewayUrl: serverConfig.openclawGatewayUrl,
+  openclawBridgeUrl: serverConfig.openclawBridgeUrl,
+  openclawAgentId: serverConfig.openclawDefaultAgentId,
+  openclawServerManaged:
+    Boolean(serverConfig.openclawAuthToken) || Boolean(serverConfig.openclawSharedSecret),
+  serverFileUploadEnabled: true,
+  enableMcp: serverConfig.enableMcp,
 };
 
 declare global {

@@ -27,7 +27,7 @@ const ar: PartialLocaleType = {
     Return: "عودة",
     SaasTips: "الإعدادات معقدة، أريد استخدامه على الفور",
     TopTips:
-      "🥳 عرض NextChat AI الأول، افتح الآن OpenAI o1, GPT-4o, Claude-3.5 وأحدث النماذج الكبيرة",
+      "🥳 عرض Wink AI الأول، افتح الآن OpenAI o1, GPT-4o, Claude-3.5 وأحدث النماذج الكبيرة",
   },
   ChatItem: {
     ChatItemCount: (count: number) => `${count} محادثة`,
@@ -292,7 +292,7 @@ const ar: PartialLocaleType = {
 
     Access: {
       SaasStart: {
-        Title: "استخدام NextChat AI",
+        Title: "استخدام Wink AI",
         Label: "(أفضل حل من حيث التكلفة)",
         SubTitle:
           "مدعوم رسميًا من NextChat، جاهز للاستخدام بدون إعداد، يدعم أحدث النماذج الكبيرة مثل OpenAI o1 و GPT-4o و Claude-3.5",

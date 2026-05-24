@@ -1,11 +1,10 @@
 import { IconButton } from "@/app/components/button";
-import GithubIcon from "@/app/icons/github.svg";
 import SDIcon from "@/app/icons/sd.svg";
 import ReturnIcon from "@/app/icons/return.svg";
 import HistoryIcon from "@/app/icons/history.svg";
 import Locale from "@/app/locales";
 
-import { Path, REPO_URL } from "@/app/constant";
+import { Path } from "@/app/constant";
 
 import { useNavigate } from "react-router-dom";
 import dynamic from "next/dynamic";
@@ -121,11 +120,7 @@ export function SideBar(props: { className?: string }) {
         <SdPanel />
       </SideBarBody>
       <SideBarTail
-        primaryAction={
-          <a href={REPO_URL} target="_blank" rel="noopener noreferrer">
-            <IconButton icon={<GithubIcon />} shadow />
-          </a>
-        }
+        primaryAction={<div />}
         secondaryAction={
           <IconButton
             text={Locale.SdPanel.Submit}

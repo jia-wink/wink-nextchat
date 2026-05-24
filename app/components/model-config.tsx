@@ -14,6 +14,8 @@ export function ModelConfigList(props: {
   updateConfig: (updater: (config: ModelConfig) => void) => void;
 }) {
   const allModels = useAllModels();
+  const isOpenClawProvider =
+    props.modelConfig?.providerName === ServiceProvider.OpenClaw;
   const groupModels = groupBy(
     allModels.filter((v) => v.available),
     "provider.providerName",
@@ -89,28 +91,31 @@ export function ModelConfigList(props: {
           }}
         ></InputRange>
       </ListItem>
-      <ListItem
-        title={Locale.Settings.MaxTokens.Title}
-        subTitle={Locale.Settings.MaxTokens.SubTitle}
-      >
-        <input
-          aria-label={Locale.Settings.MaxTokens.Title}
-          type="number"
-          min={1024}
-          max={512000}
-          value={props.modelConfig.max_tokens}
-          onChange={(e) =>
-            props.updateConfig(
-              (config) =>
-                (config.max_tokens = ModalConfigValidator.max_tokens(
-                  e.currentTarget.valueAsNumber,
-                )),
-            )
-          }
-        ></input>
-      </ListItem>
+      {!isOpenClawProvider && (
+        <ListItem
+          title={Locale.Settings.MaxTokens.Title}
+          subTitle={Locale.Settings.MaxTokens.SubTitle}
+        >
+          <input
+            aria-label={Locale.Settings.MaxTokens.Title}
+            type="number"
+            min={1024}
+            max={512000}
+            value={props.modelConfig.max_tokens}
+            onChange={(e) =>
+              props.updateConfig(
+                (config) =>
+                  (config.max_tokens = ModalConfigValidator.max_tokens(
+                    e.currentTarget.valueAsNumber,
+                  )),
+              )
+            }
+          ></input>
+        </ListItem>
+      )}
 
-      {props.modelConfig?.providerName == ServiceProvider.Google ? null : (
+      {props.modelConfig?.providerName == ServiceProvider.Google ||
+      isOpenClawProvider ? null : (
         <>
           <ListItem
             title={Locale.Settings.PresencePenalty.Title}
@@ -191,83 +196,91 @@ export function ModelConfigList(props: {
           </ListItem>
         </>
       )}
-      <ListItem
-        title={Locale.Settings.HistoryCount.Title}
-        subTitle={Locale.Settings.HistoryCount.SubTitle}
-      >
-        <InputRange
-          aria={Locale.Settings.HistoryCount.Title}
-          title={props.modelConfig.historyMessageCount.toString()}
-          value={props.modelConfig.historyMessageCount}
-          min="0"
-          max="64"
-          step="1"
-          onChange={(e) =>
-            props.updateConfig(
-              (config) => (config.historyMessageCount = e.target.valueAsNumber),
-            )
-          }
-        ></InputRange>
-      </ListItem>
+      {!isOpenClawProvider && (
+        <>
+          <ListItem
+            title={Locale.Settings.HistoryCount.Title}
+            subTitle={Locale.Settings.HistoryCount.SubTitle}
+          >
+            <InputRange
+              aria={Locale.Settings.HistoryCount.Title}
+              title={props.modelConfig.historyMessageCount.toString()}
+              value={props.modelConfig.historyMessageCount}
+              min="0"
+              max="64"
+              step="1"
+              onChange={(e) =>
+                props.updateConfig(
+                  (config) =>
+                    (config.historyMessageCount = e.target.valueAsNumber),
+                )
+              }
+            ></InputRange>
+          </ListItem>
 
-      <ListItem
-        title={Locale.Settings.CompressThreshold.Title}
-        subTitle={Locale.Settings.CompressThreshold.SubTitle}
-      >
-        <input
-          aria-label={Locale.Settings.CompressThreshold.Title}
-          type="number"
-          min={500}
-          max={4000}
-          value={props.modelConfig.compressMessageLengthThreshold}
-          onChange={(e) =>
-            props.updateConfig(
-              (config) =>
-                (config.compressMessageLengthThreshold =
-                  e.currentTarget.valueAsNumber),
-            )
-          }
-        ></input>
-      </ListItem>
-      <ListItem title={Locale.Memory.Title} subTitle={Locale.Memory.Send}>
-        <input
-          aria-label={Locale.Memory.Title}
-          type="checkbox"
-          checked={props.modelConfig.sendMemory}
-          onChange={(e) =>
-            props.updateConfig(
-              (config) => (config.sendMemory = e.currentTarget.checked),
-            )
-          }
-        ></input>
-      </ListItem>
-      <ListItem
-        title={Locale.Settings.CompressModel.Title}
-        subTitle={Locale.Settings.CompressModel.SubTitle}
-      >
-        <Select
-          className={styles["select-compress-model"]}
-          aria-label={Locale.Settings.CompressModel.Title}
-          value={compressModelValue}
-          onChange={(e) => {
-            const [model, providerName] = getModelProvider(
-              e.currentTarget.value,
-            );
-            props.updateConfig((config) => {
-              config.compressModel = ModalConfigValidator.model(model);
-              config.compressProviderName = providerName as ServiceProvider;
-            });
-          }}
-        >
-          {allModels
-            .filter((v) => v.available)
-            .map((v, i) => (
-              <option value={`${v.name}@${v.provider?.providerName}`} key={i}>
-                {v.displayName}({v.provider?.providerName})
-              </option>
-            ))}
-        </Select>
-      </ListItem>
+          <ListItem
+            title={Locale.Settings.CompressThreshold.Title}
+            subTitle={Locale.Settings.CompressThreshold.SubTitle}
+          >
+            <input
+              aria-label={Locale.Settings.CompressThreshold.Title}
+              type="number"
+              min={500}
+              max={4000}
+              value={props.modelConfig.compressMessageLengthThreshold}
+              onChange={(e) =>
+                props.updateConfig(
+                  (config) =>
+                    (config.compressMessageLengthThreshold =
+                      e.currentTarget.valueAsNumber),
+                )
+              }
+            ></input>
+          </ListItem>
+          <ListItem title={Locale.Memory.Title} subTitle={Locale.Memory.Send}>
+            <input
+              aria-label={Locale.Memory.Title}
+              type="checkbox"
+              checked={props.modelConfig.sendMemory}
+              onChange={(e) =>
+                props.updateConfig(
+                  (config) => (config.sendMemory = e.currentTarget.checked),
+                )
+              }
+            ></input>
+          </ListItem>
+          <ListItem
+            title={Locale.Settings.CompressModel.Title}
+            subTitle={Locale.Settings.CompressModel.SubTitle}
+          >
+            <Select
+              className={styles["select-compress-model"]}
+              aria-label={Locale.Settings.CompressModel.Title}
+              value={compressModelValue}
+              onChange={(e) => {
+                const [model, providerName] = getModelProvider(
+                  e.currentTarget.value,
+                );
+                props.updateConfig((config) => {
+                  config.compressModel = ModalConfigValidator.model(model);
+                  config.compressProviderName = providerName as ServiceProvider;
+                });
+              }}
+            >
+              {allModels
+                .filter((v) => v.available)
+                .map((v, i) => (
+                  <option
+                    value={`${v.name}@${v.provider?.providerName}`}
+                    key={i}
+                  >
+                    {v.displayName}({v.provider?.providerName})
+                  </option>
+                ))}
+            </Select>
+          </ListItem>
+        </>
+      )}
     </>
   );
 }

@@ -11,6 +11,24 @@ import {
 } from "@fortaine/fetch-event-source";
 import { prettyObject } from "./format";
 import { fetch as tauriFetch } from "./stream";
+import { getClientConfig } from "../config/client";
+
+const SERVER_FILE_UPLOAD_URL = "/api/files/upload";
+
+async function uploadImageToServer(file: Blob): Promise<string> {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(SERVER_FILE_UPLOAD_URL, {
+    method: "POST",
+    body,
+    credentials: "include",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.code !== 0 || !payload?.data) {
+    throw new Error(payload?.msg || "server upload failed");
+  }
+  return payload.data as string;
+}
 
 export function compressImage(file: Blob, maxSize: number): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -142,6 +160,28 @@ export function base64Image2Blob(base64Data: string, contentType: string) {
 }
 
 export function uploadImage(file: Blob): Promise<string> {
+  if (!getClientConfig()?.isApp) {
+    return uploadImageToServer(file).catch(() => {
+      if (!window._SW_ENABLED) {
+        return compressImage(file, 256 * 1024);
+      }
+      const body = new FormData();
+      body.append("file", file);
+      return fetch(UPLOAD_URL, {
+        method: "post",
+        body,
+        mode: "cors",
+        credentials: "include",
+      })
+        .then((res) => res.json())
+        .then((res) => {
+          if (res?.code == 0 && res?.data) {
+            return res?.data;
+          }
+          throw Error(`upload Error: ${res?.msg}`);
+        });
+    });
+  }
   if (!window._SW_ENABLED) {
     // if serviceWorker register error, using compressImage
     return compressImage(file, 256 * 1024);

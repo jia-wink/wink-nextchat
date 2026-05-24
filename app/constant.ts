@@ -1,7 +1,7 @@
-export const OWNER = "ChatGPTNextWeb";
-export const REPO = "ChatGPT-Next-Web";
+export const OWNER = "jia-wink";
+export const REPO = "wink-nextchat";
 export const REPO_URL = `https://github.com/${OWNER}/${REPO}`;
-export const PLUGINS_REPO_URL = `https://github.com/${OWNER}/NextChat-Awesome-Plugins`;
+export const PLUGINS_REPO_URL = `${REPO_URL}/tree/main/public/plugins.json`;
 export const ISSUE_URL = `https://github.com/${OWNER}/${REPO}/issues`;
 export const UPDATE_URL = `${REPO_URL}#keep-updated`;
 export const RELEASE_URL = `${REPO_URL}/releases`;
@@ -37,6 +37,7 @@ export const CHATGLM_BASE_URL = "https://open.bigmodel.cn";
 export const SILICONFLOW_BASE_URL = "https://api.siliconflow.cn";
 
 export const AI302_BASE_URL = "https://api.302.ai";
+export const OPENCLAW_GATEWAY_URL = "http://127.0.0.1:18789";
 
 export const CACHE_URL_PREFIX = "/api/cache";
 export const UPLOAD_URL = `${CACHE_URL_PREFIX}/upload`;
@@ -60,6 +61,7 @@ export enum ApiPath {
   Cors = "",
   Azure = "/api/azure",
   OpenAI = "/api/openai",
+  OpenClaw = "/api/openclaw",
   Anthropic = "/api/anthropic",
   Google = "/api/google",
   Baidu = "/api/baidu",
@@ -110,7 +112,7 @@ export const ACCESS_CODE_PREFIX = "nk-";
 export const LAST_INPUT_KEY = "last-input";
 export const UNFINISHED_INPUT = (id: string) => "unfinished-input-" + id;
 
-export const STORAGE_KEY = "chatgpt-next-web";
+export const STORAGE_KEY = "wink-nextchat";
 
 export const REQUEST_TIMEOUT_MS = 60000;
 export const REQUEST_TIMEOUT_MS_FOR_THINKING = REQUEST_TIMEOUT_MS * 5;
@@ -119,6 +121,7 @@ export const EXPORT_MESSAGE_CLASS_NAME = "export-markdown";
 
 export enum ServiceProvider {
   OpenAI = "OpenAI",
+  OpenClaw = "OpenClaw",
   Azure = "Azure",
   Google = "Google",
   Anthropic = "Anthropic",
@@ -148,6 +151,7 @@ export enum GoogleSafetySettingsThreshold {
 export enum ModelProvider {
   Stability = "Stability",
   GPT = "GPT",
+  OpenClaw = "OpenClaw",
   GeminiPro = "GeminiPro",
   Claude = "Claude",
   Ernie = "Ernie",
@@ -182,6 +186,16 @@ export const OpenaiPath = {
   UsagePath: "dashboard/billing/usage",
   SubsPath: "dashboard/billing/subscription",
   ListModelPath: "v1/models",
+};
+
+export const OpenClaw = {
+  ExampleEndpoint: OPENCLAW_GATEWAY_URL,
+  SessionPath: "session",
+  MessagePath: "message",
+  EventsPath: "events",
+  HistoryPath: "history",
+  AgentsPath: "agents",
+  AuthPath: "auth",
 };
 
 export const Azure = {
@@ -742,8 +756,21 @@ const ai302Models = [
   "gemini-2.5-pro",
 ];
 
+const openclawModels = ["openclaw"];
+
 let seq = 1000; // 内置的模型序号生成器从1000开始
 export const DEFAULT_MODELS = [
+  ...openclawModels.map((name) => ({
+    name,
+    available: true,
+    sorted: seq++,
+    provider: {
+      id: "openclaw",
+      providerName: "OpenClaw",
+      providerType: "openclaw",
+      sorted: 0,
+    },
+  })),
   ...openaiModels.map((name) => ({
     name,
     available: true,
@@ -929,5 +956,5 @@ export const internalAllowedWebDavEndpoints = [
 
 export const DEFAULT_GA_ID = "G-89WN60ZK2E";
 
-export const SAAS_CHAT_URL = "https://nextchat.club";
-export const SAAS_CHAT_UTM_URL = "https://nextchat.club?utm=github";
+export const SAAS_CHAT_URL = REPO_URL;
+export const SAAS_CHAT_UTM_URL = REPO_URL;

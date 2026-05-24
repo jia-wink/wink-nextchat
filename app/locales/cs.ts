@@ -27,7 +27,7 @@ const cs: PartialLocaleType = {
     Return: "Návrat",
     SaasTips: "Konfigurace je příliš složitá, chci okamžitě začít používat",
     TopTips:
-      "🥳 Uvítací nabídka NextChat AI, okamžitě odemkněte OpenAI o1, GPT-4o, Claude-3.5 a nejnovější velké modely",
+      "🥳 Uvítací nabídka Wink AI, okamžitě odemkněte OpenAI o1, GPT-4o, Claude-3.5 a nejnovější velké modely",
   },
   ChatItem: {
     ChatItemCount: (count: number) => `${count} konverzací`,
@@ -295,7 +295,7 @@ const cs: PartialLocaleType = {
 
     Access: {
       SaasStart: {
-        Title: "Použití NextChat AI",
+        Title: "Použití Wink AI",
         Label: "(Nejlepší nákladově efektivní řešení)",
         SubTitle:
           "Oficiálně udržováno NextChat, připraveno k použití bez konfigurace, podporuje nejnovější velké modely jako OpenAI o1, GPT-4o, Claude-3.5",

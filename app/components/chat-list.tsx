@@ -19,6 +19,18 @@ import { useRef, useEffect } from "react";
 import { showConfirm } from "./ui-lib";
 import { useMobileScreen } from "../utils";
 import clsx from "clsx";
+import type { ChatSession } from "../store/chat";
+
+function getChatListTitle(session: ChatSession): string {
+  const topic = session.topic?.trim() || Locale.Store.DefaultTopic;
+  const sessionKey = session.openclaw?.sessionKey?.trim();
+
+  if (!sessionKey || topic.includes(sessionKey)) {
+    return topic;
+  }
+
+  return `${topic} · ${sessionKey}`;
+}
 
 export function ChatItem(props: {
   onClick?: () => void;
@@ -142,7 +154,7 @@ export function ChatList(props: { narrow?: boolean }) {
           >
             {sessions.map((item, i) => (
               <ChatItem
-                title={item.topic}
+                title={getChatListTitle(item)}
                 time={new Date(item.lastUpdate).toLocaleString()}
                 count={item.messages.length}
                 key={item.id}

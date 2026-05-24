@@ -9,7 +9,6 @@ import CopyIcon from "../icons/copy.svg";
 import ClearIcon from "../icons/clear.svg";
 import LoadingIcon from "../icons/three-dots.svg";
 import EditIcon from "../icons/edit.svg";
-import FireIcon from "../icons/fire.svg";
 import EyeIcon from "../icons/eye.svg";
 import DownloadIcon from "../icons/download.svg";
 import UploadIcon from "../icons/upload.svg";
@@ -19,7 +18,6 @@ import ConfirmIcon from "../icons/confirm.svg";
 import ConnectionIcon from "../icons/connection.svg";
 import CloudSuccessIcon from "../icons/cloud-success.svg";
 import CloudFailIcon from "../icons/cloud-fail.svg";
-import { trackSettingsPageGuideToCPaymentClick } from "../utils/auth-settings-events";
 import {
   Input,
   List,
@@ -49,10 +47,10 @@ import Locale, {
   changeLang,
   getLang,
 } from "../locales";
-import { copyToClipboard, clientUpdate, semverCompare } from "../utils";
-import Link from "next/link";
+import { copyToClipboard } from "../utils";
 import {
   Anthropic,
+  ApiPath,
   Azure,
   Baidu,
   Tencent,
@@ -63,15 +61,13 @@ import {
   Google,
   GoogleSafetySettingsThreshold,
   OPENAI_BASE_URL,
+  OpenClaw,
   Path,
-  RELEASE_URL,
   STORAGE_KEY,
   ServiceProvider,
   SlotID,
-  UPDATE_URL,
   Stability,
   Iflytek,
-  SAAS_CHAT_URL,
   ChatGLM,
   DeepSeek,
   SiliconFlow,
@@ -88,7 +84,14 @@ import { nanoid } from "nanoid";
 import { useMaskStore } from "../store/mask";
 import { ProviderType } from "../utils/cloud";
 import { TTSConfigList } from "./tts-config";
-import { RealtimeConfigList } from "./realtime-chat/realtime-config";
+import {
+  getOpenClawAuthState,
+  loginOpenClaw,
+  logoutOpenClaw,
+  normalizeOpenClawModels,
+  toOpenClawLlmModels,
+} from "../client/platforms/openclaw";
+import { OpenClawAuthModal } from "./openclaw-auth-modal";
 
 function EditPromptModal(props: { id: string; onClose: () => void }) {
   const promptStore = usePromptStore();
@@ -192,8 +195,11 @@ function UserPromptModal(props: { onClose?: () => void }) {
           ></input>
 
           <div className={styles["user-prompt-list"]}>
-            {prompts.map((v, _) => (
-              <div className={styles["user-prompt-item"]} key={v.id ?? v.title}>
+            {prompts.map((v, index) => (
+              <div
+                className={styles["user-prompt-item"]}
+                key={v.id ?? `${v.title}-${index}`}
+              >
                 <div className={styles["user-prompt-header"]}>
                   <div className={styles["user-prompt-title"]}>{v.title}</div>
                   <div className={styles["user-prompt-content"] + " one-line"}>
@@ -586,32 +592,22 @@ export function Settings() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const config = useAppConfig();
   const updateConfig = config.update;
-
   const updateStore = useUpdateStore();
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const currentVersion = updateStore.formatVersion(updateStore.version);
-  const remoteId = updateStore.formatVersion(updateStore.remoteVersion);
-  const hasNewVersion = semverCompare(currentVersion, remoteId) === -1;
-  const updateUrl = getClientConfig()?.isApp ? RELEASE_URL : UPDATE_URL;
-
-  function checkUpdate(force = false) {
-    setCheckingUpdate(true);
-    updateStore.getLatestVersion(force).then(() => {
-      setCheckingUpdate(false);
-    });
-
-    console.log("[Update] local version ", updateStore.version);
-    console.log("[Update] remote version ", updateStore.remoteVersion);
-  }
 
   const accessStore = useAccessStore();
+  const [openclawAgents, setOpenclawAgents] = useState<
+    Array<{ id: string; name?: string }>
+  >([]);
+  const [showOpenClawLogin, setShowOpenClawLogin] = useState(false);
+  const [openclawAuthVersion, setOpenclawAuthVersion] = useState(0);
   const shouldHideBalanceQuery = useMemo(() => {
     const isOpenAiUrl = accessStore.openaiUrl.includes(OPENAI_BASE_URL);
 
     return (
       accessStore.hideBalanceQuery ||
       isOpenAiUrl ||
-      accessStore.provider === ServiceProvider.Azure
+      accessStore.provider === ServiceProvider.Azure ||
+      accessStore.provider === ServiceProvider.OpenClaw
     );
   }, [
     accessStore.hideBalanceQuery,
@@ -648,8 +644,6 @@ export function Settings() {
 
   const showUsage = accessStore.isAuthorized();
   useEffect(() => {
-    // checks per minutes
-    checkUpdate();
     showUsage && checkUsage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -673,8 +667,69 @@ export function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (accessStore.provider !== ServiceProvider.OpenClaw) {
+      return;
+    }
+    getOpenClawAuthState().then((auth) => {
+      accessStore.update((access) => {
+        access.openclawUser = auth.username ?? "";
+        access.openclawAllowedAgents = auth.agents;
+      });
+      if (!auth.authenticated) {
+        setOpenclawAgents([]);
+        return;
+      }
+      fetch("/api/openclaw/agents", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          gatewayUrl: accessStore.openclawGatewayUrl,
+          authToken: accessStore.openclawAuthToken,
+          defaultAgentId: accessStore.openclawAgentId,
+        }),
+      })
+        .then((res) => res.json())
+        .then((res) => {
+          if (res?.error) {
+            throw new Error(res.message || "OpenClaw login is required");
+          }
+          const agents = normalizeOpenClawModels(res?.agents);
+          const models = normalizeOpenClawModels(res?.models);
+
+          config.mergeModels(toOpenClawLlmModels(models));
+
+          const resolvedAgents =
+            agents.length > 0 ? agents : [{ id: "main", name: "main" }];
+          setOpenclawAgents(resolvedAgents);
+          if (
+            !resolvedAgents.some(
+              (agent: { id: string; name?: string }) =>
+                agent.id === accessStore.openclawAgentId,
+            )
+          ) {
+            accessStore.update((access) => {
+              access.openclawAgentId = resolvedAgents[0].id;
+            });
+          }
+        })
+        .catch((error) => {
+          console.error("[OpenClaw] failed to load agents", error);
+        });
+    });
+  }, [
+    accessStore.provider,
+    accessStore.openclawGatewayUrl,
+    accessStore.openclawAuthToken,
+    accessStore.openclawAgentId,
+    openclawAuthVersion,
+  ]);
+
   const clientConfig = useMemo(() => getClientConfig(), []);
   const showAccessCode = enabledAccessControl && !clientConfig?.isApp;
+  const displayVersion = clientConfig?.displayVersion?.trim() || clientConfig?.version || "unknown";
 
   const accessCodeComponent = showAccessCode && (
     <ListItem
@@ -689,31 +744,6 @@ export function Settings() {
           accessStore.update(
             (access) => (access.accessCode = e.currentTarget.value),
           );
-        }}
-      />
-    </ListItem>
-  );
-
-  const saasStartComponent = (
-    <ListItem
-      className={styles["subtitle-button"]}
-      title={
-        Locale.Settings.Access.SaasStart.Title +
-        `${Locale.Settings.Access.SaasStart.Label}`
-      }
-      subTitle={Locale.Settings.Access.SaasStart.SubTitle}
-    >
-      <IconButton
-        aria={
-          Locale.Settings.Access.SaasStart.Title +
-          Locale.Settings.Access.SaasStart.ChatNow
-        }
-        icon={<FireIcon />}
-        type={"primary"}
-        text={Locale.Settings.Access.SaasStart.ChatNow}
-        onClick={() => {
-          trackSettingsPageGuideToCPaymentClick();
-          window.location.href = SAAS_CHAT_URL;
         }}
       />
     </ListItem>
@@ -1499,6 +1529,118 @@ export function Settings() {
       </>
   );
 
+  const openclawConfigComponent = accessStore.provider ===
+    ServiceProvider.OpenClaw && (
+    <>
+      <ListItem
+        title="OpenClaw Bridge URL"
+        subTitle="OpenClaw bridge endpoint. Local deployment can keep the default /api/openclaw."
+      >
+        <input
+          aria-label="OpenClaw Bridge URL"
+          type="text"
+          value={accessStore.openclawBridgeUrl}
+          placeholder={ApiPath.OpenClaw}
+          onChange={(e) =>
+            accessStore.update(
+              (access) => (access.openclawBridgeUrl = e.currentTarget.value),
+            )
+          }
+        ></input>
+      </ListItem>
+      <ListItem
+        title="OpenClaw Gateway URL"
+        subTitle="Upstream OpenClaw gateway address."
+      >
+        <input
+          aria-label="OpenClaw Gateway URL"
+          type="text"
+          value={accessStore.openclawGatewayUrl}
+          placeholder={OpenClaw.ExampleEndpoint}
+          onChange={(e) =>
+            accessStore.update(
+              (access) => (access.openclawGatewayUrl = e.currentTarget.value),
+            )
+          }
+        ></input>
+      </ListItem>
+      <ListItem
+        title="OpenClaw Auth Token"
+        subTitle="Gateway bearer token or shared secret."
+      >
+        <PasswordInput
+          aria-label="OpenClaw Auth Token"
+          value={accessStore.openclawAuthToken}
+          type="text"
+          placeholder="token"
+          onChange={(e) => {
+            accessStore.update(
+              (access) => (access.openclawAuthToken = e.currentTarget.value),
+            );
+          }}
+        />
+      </ListItem>
+      <ListItem
+        title="OpenClaw Agent"
+        subTitle="Choose the agent used when a new OpenClaw chat is first bound. Existing chats keep their bound agent."
+      >
+        <Select
+          aria-label="OpenClaw Agent"
+          value={accessStore.openclawAgentId}
+          onChange={(e) =>
+            accessStore.update(
+              (access) => (access.openclawAgentId = e.currentTarget.value),
+            )
+          }
+        >
+          {(openclawAgents.length > 0
+            ? openclawAgents
+            : [{ id: "main", name: "main" }]
+          ).map((agent, index) => (
+            <option key={`${agent.id}-${index}`} value={agent.id}>
+              {agent.name || agent.id}
+            </option>
+          ))}
+        </Select>
+      </ListItem>
+    </>
+  );
+
+  const openclawAccessComponent = accessStore.openclawEnabled && (
+    <ListItem
+      title="OpenClaw Access"
+      subTitle={
+        accessStore.openclawUser
+          ? `Logged in as ${accessStore.openclawUser}`
+          : "Guest mode. Login before using OpenClaw agents."
+      }
+    >
+      <div style={{ display: "flex", gap: 8 }}>
+        <IconButton
+          text={accessStore.openclawUser ? "Switch" : "Login"}
+          onClick={() => setShowOpenClawLogin(true)}
+          bordered
+        />
+        {accessStore.openclawUser && (
+          <IconButton
+            text="Logout"
+            onClick={async () => {
+              await logoutOpenClaw();
+              accessStore.update((access) => {
+                access.openclawUser = "";
+                access.openclawAllowedAgents = [];
+                access.provider = ServiceProvider.OpenAI;
+              });
+              setOpenclawAgents([]);
+              setOpenclawAuthVersion((version) => version + 1);
+            }}
+            bordered
+          />
+        )}
+      </div>
+    </ListItem>
+  );
+
   return (
     <ErrorBoundary>
       <div className="window-header" data-tauri-drag-region>
@@ -1549,39 +1691,6 @@ export function Settings() {
                 <Avatar avatar={config.avatar} />
               </div>
             </Popover>
-          </ListItem>
-
-          <ListItem
-            title={Locale.Settings.Update.Version(currentVersion ?? "unknown")}
-            subTitle={
-              checkingUpdate
-                ? Locale.Settings.Update.IsChecking
-                : hasNewVersion
-                ? Locale.Settings.Update.FoundUpdate(remoteId ?? "ERROR")
-                : Locale.Settings.Update.IsLatest
-            }
-          >
-            {checkingUpdate ? (
-              <LoadingIcon />
-            ) : hasNewVersion ? (
-              clientConfig?.isApp ? (
-                <IconButton
-                  icon={<ResetIcon></ResetIcon>}
-                  text={Locale.Settings.Update.GoToUpdate}
-                  onClick={() => clientUpdate()}
-                />
-              ) : (
-                <Link href={updateUrl} target="_blank" className="link">
-                  {Locale.Settings.Update.GoToUpdate}
-                </Link>
-              )
-            ) : (
-              <IconButton
-                icon={<ResetIcon></ResetIcon>}
-                text={Locale.Settings.Update.CheckUpdate}
-                onClick={() => checkUpdate(true)}
-              />
-            )}
           </ListItem>
 
           <ListItem title={Locale.Settings.SendKey}>
@@ -1816,7 +1925,6 @@ export function Settings() {
         </List>
 
         <List id={SlotID.CustomModel}>
-          {saasStartComponent}
           {accessCodeComponent}
 
           {!accessStore.hideUserApiKey && (
@@ -1832,11 +1940,21 @@ export function Settings() {
                     <Select
                       aria-label={Locale.Settings.Access.Provider.Title}
                       value={accessStore.provider}
-                      onChange={(e) => {
+                      onChange={async (e) => {
+                        const nextProvider = e.target.value as ServiceProvider;
+                        if (nextProvider === ServiceProvider.OpenClaw) {
+                          const auth = await getOpenClawAuthState();
+                          accessStore.update((access) => {
+                            access.openclawUser = auth.username ?? "";
+                            access.openclawAllowedAgents = auth.agents;
+                          });
+                          if (!auth.authenticated) {
+                            setShowOpenClawLogin(true);
+                            return;
+                          }
+                        }
                         accessStore.update(
-                          (access) =>
-                            (access.provider = e.target
-                              .value as ServiceProvider),
+                          (access) => (access.provider = nextProvider),
                         );
                       }}
                     >
@@ -1848,7 +1966,9 @@ export function Settings() {
                     </Select>
                   </ListItem>
 
+                  {openclawAccessComponent}
                   {openAIConfigComponent}
+                  {openclawConfigComponent}
                   {azureConfigComponent}
                   {googleConfigComponent}
                   {anthropicConfigComponent}
@@ -1896,6 +2016,13 @@ export function Settings() {
           ) : null}
 
           <ListItem
+            title={Locale.Settings.Update.Version(displayVersion)}
+            subTitle="Env: NEXTCHAT_DISPLAY_VERSION"
+          >
+            <div />
+          </ListItem>
+
+          <ListItem
             title={Locale.Settings.Access.CustomModel.Title}
             subTitle={Locale.Settings.Access.CustomModel.SubTitle}
             vertical={true}
@@ -1929,18 +2056,36 @@ export function Settings() {
         {shouldShowPromptModal && (
           <UserPromptModal onClose={() => setShowPromptModal(false)} />
         )}
-        <List>
-          <RealtimeConfigList
-            realtimeConfig={config.realtimeConfig}
-            updateConfig={(updater) => {
-              const realtimeConfig = { ...config.realtimeConfig };
-              updater(realtimeConfig);
-              config.update(
-                (config) => (config.realtimeConfig = realtimeConfig),
-              );
+        {showOpenClawLogin && (
+          <OpenClawAuthModal
+            onClose={() => setShowOpenClawLogin(false)}
+            onGuest={() => {
+              accessStore.update((access) => {
+                access.provider =
+                  access.provider === ServiceProvider.OpenClaw
+                    ? ServiceProvider.OpenAI
+                    : access.provider;
+              });
+              setShowOpenClawLogin(false);
+            }}
+            onLogin={async (username, password) => {
+              const auth = await loginOpenClaw(username, password);
+              accessStore.update((access) => {
+                access.provider = ServiceProvider.OpenClaw;
+                access.openclawUser = auth.username ?? "";
+                access.openclawAllowedAgents = auth.agents;
+                if (
+                  auth.agents.length > 0 &&
+                  !auth.agents.includes("*") &&
+                  !auth.agents.includes(access.openclawAgentId)
+                ) {
+                  access.openclawAgentId = auth.agents[0];
+                }
+              });
+              setOpenclawAuthVersion((version) => version + 1);
             }}
           />
-        </List>
+        )}
         <List>
           <TTSConfigList
             ttsConfig={config.ttsConfig}
