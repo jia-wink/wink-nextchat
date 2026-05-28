@@ -7,6 +7,17 @@ export type NextChatChannelConfig = {
   defaultAgentId?: string;
   sessionTtl?: number;
   historySyncLimit?: number;
+  messageAggregation?: {
+    enabled?: boolean;
+    debounceMs?: number;
+    agents?: Record<
+      string,
+      {
+        aggregateReplies?: boolean;
+        debounceMs?: number;
+      }
+    >;
+  };
   accounts?: Record<
     string,
     {

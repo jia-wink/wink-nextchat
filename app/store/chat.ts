@@ -323,8 +323,6 @@ function findActiveOpenClawAssistant(
   return undefined;
 }
 
-const OPENCLAW_NEXTCHAT_AGGREGATE_MS = 60_000;
-
 type PendingOpenClawBatch = {
   session: ChatSession;
   modelConfig: ModelConfig;
@@ -489,11 +487,8 @@ function enqueueOpenClawBatch(params: {
   if (batch.timer) {
     clearTimeout(batch.timer);
   }
-  batch.timer = setTimeout(
-    () => flushOpenClawBatch(params.session.id),
-    OPENCLAW_NEXTCHAT_AGGREGATE_MS,
-  );
   pendingOpenClawBatches.set(params.session.id, batch);
+  batch.timer = setTimeout(() => flushOpenClawBatch(params.session.id), 0);
 }
 
 async function getMcpSystemPrompt(): Promise<string> {

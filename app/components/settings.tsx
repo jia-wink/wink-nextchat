@@ -89,9 +89,21 @@ import {
   loginOpenClaw,
   logoutOpenClaw,
   normalizeOpenClawModels,
+  type OpenClawAuthState,
   toOpenClawLlmModels,
 } from "../client/platforms/openclaw";
 import { OpenClawAuthModal } from "./openclaw-auth-modal";
+
+const OPENCLAW_ADMIN_USERNAME = "admin";
+const OPENCLAW_FALLBACK_AGENT_ID = "main";
+const OPENCLAW_FALLBACK_MODEL_ID = "default";
+
+function getFirstScopedOpenClawAgent(
+  agents: string[],
+  fallback = OPENCLAW_FALLBACK_AGENT_ID,
+) {
+  return agents.find((agent) => agent && agent !== "*") ?? fallback;
+}
 
 function EditPromptModal(props: { id: string; onClose: () => void }) {
   const promptStore = usePromptStore();
@@ -595,11 +607,71 @@ export function Settings() {
   const updateStore = useUpdateStore();
 
   const accessStore = useAccessStore();
+  const chatStore = useChatStore();
   const [openclawAgents, setOpenclawAgents] = useState<
     Array<{ id: string; name?: string }>
   >([]);
   const [showOpenClawLogin, setShowOpenClawLogin] = useState(false);
   const [openclawAuthVersion, setOpenclawAuthVersion] = useState(0);
+  const visibleOpenclawAgents = useMemo(() => {
+    if (openclawAgents.length > 0) {
+      return openclawAgents;
+    }
+
+    return accessStore.openclawAllowedAgents
+      .filter((agent) => agent && agent !== "*")
+      .map((agent) => ({ id: agent, name: agent }));
+  }, [accessStore.openclawAllowedAgents, openclawAgents]);
+  const isOpenClawAdmin = accessStore.openclawUser === OPENCLAW_ADMIN_USERNAME;
+  const shouldShowOpenClawAgentSelect =
+    accessStore.provider === ServiceProvider.OpenClaw &&
+    visibleOpenclawAgents.length > 1;
+
+  const syncOpenClawDefaults = (agentId: string, modelId?: string) => {
+    const nextAgentId = agentId || OPENCLAW_FALLBACK_AGENT_ID;
+    const nextModelId = modelId || OPENCLAW_FALLBACK_MODEL_ID;
+
+    config.update((config) => {
+      config.modelConfig.providerName = ServiceProvider.OpenClaw;
+      config.modelConfig.model = nextModelId as any;
+    });
+
+    const currentSession = chatStore.currentSession();
+    if (!currentSession || currentSession.messages.length > 0) {
+      return;
+    }
+
+    chatStore.updateTargetSession(currentSession, (session) => {
+      session.mask.modelConfig.providerName = ServiceProvider.OpenClaw;
+      session.mask.modelConfig.model = nextModelId as any;
+      session.openclaw = {
+        ...session.openclaw,
+        channel: "nextchat",
+        agentId: nextAgentId,
+        connectionStatus: session.openclaw?.connectionStatus ?? "connecting",
+      };
+    });
+  };
+
+  const applyOpenClawLogin = (auth: OpenClawAuthState) => {
+    const nextAgentId = getFirstScopedOpenClawAgent(
+      auth.agents,
+      OPENCLAW_FALLBACK_AGENT_ID,
+    );
+    const currentOpenClawModel =
+      config.modelConfig.providerName === ServiceProvider.OpenClaw
+        ? config.modelConfig.model
+        : OPENCLAW_FALLBACK_MODEL_ID;
+
+    accessStore.update((access) => {
+      access.useCustomConfig = true;
+      access.provider = ServiceProvider.OpenClaw;
+      access.openclawUser = auth.username ?? "";
+      access.openclawAllowedAgents = auth.agents;
+      access.openclawAgentId = nextAgentId;
+    });
+    syncOpenClawDefaults(nextAgentId, currentOpenClawModel);
+  };
   const shouldHideBalanceQuery = useMemo(() => {
     const isOpenAiUrl = accessStore.openaiUrl.includes(OPENAI_BASE_URL);
 
@@ -673,6 +745,7 @@ export function Settings() {
     }
     getOpenClawAuthState().then((auth) => {
       accessStore.update((access) => {
+        access.useCustomConfig = true;
         access.openclawUser = auth.username ?? "";
         access.openclawAllowedAgents = auth.agents;
       });
@@ -702,23 +775,54 @@ export function Settings() {
           config.mergeModels(toOpenClawLlmModels(models));
 
           const resolvedAgents =
-            agents.length > 0 ? agents : [{ id: "main", name: "main" }];
+            agents.length > 0
+              ? agents
+              : [
+                  {
+                    id: OPENCLAW_FALLBACK_AGENT_ID,
+                    name: OPENCLAW_FALLBACK_AGENT_ID,
+                  },
+                ];
           setOpenclawAgents(resolvedAgents);
-          if (
-            !resolvedAgents.some(
-              (agent: { id: string; name?: string }) =>
-                agent.id === accessStore.openclawAgentId,
-            )
-          ) {
+
+          const agentIsAvailable = resolvedAgents.some(
+            (agent: { id: string; name?: string }) =>
+              agent.id === accessStore.openclawAgentId,
+          );
+          const nextAgentId = agentIsAvailable
+            ? accessStore.openclawAgentId
+            : resolvedAgents[0].id;
+          if (!agentIsAvailable) {
             accessStore.update((access) => {
-              access.openclawAgentId = resolvedAgents[0].id;
+              access.openclawAgentId = nextAgentId;
             });
+          }
+
+          const availableModelIds =
+            models.length > 0
+              ? models.map((model) => model.id)
+              : [OPENCLAW_FALLBACK_MODEL_ID];
+          const currentModel =
+            config.modelConfig.providerName === ServiceProvider.OpenClaw
+              ? config.modelConfig.model
+              : "";
+          const nextModelId = availableModelIds.includes(currentModel)
+            ? currentModel
+            : availableModelIds[0];
+
+          if (
+            config.modelConfig.providerName !== ServiceProvider.OpenClaw ||
+            config.modelConfig.model !== nextModelId ||
+            !agentIsAvailable
+          ) {
+            syncOpenClawDefaults(nextAgentId, nextModelId);
           }
         })
         .catch((error) => {
           console.error("[OpenClaw] failed to load agents", error);
         });
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     accessStore.provider,
     accessStore.openclawGatewayUrl,
@@ -729,7 +833,8 @@ export function Settings() {
 
   const clientConfig = useMemo(() => getClientConfig(), []);
   const showAccessCode = enabledAccessControl && !clientConfig?.isApp;
-  const displayVersion = clientConfig?.displayVersion?.trim() || clientConfig?.version || "unknown";
+  const displayVersion =
+    clientConfig?.displayVersion?.trim() || clientConfig?.version || "unknown";
 
   const accessCodeComponent = showAccessCode && (
     <ListItem
@@ -1489,120 +1594,126 @@ export function Settings() {
     </>
   );
 
-  const ai302ConfigComponent = accessStore.provider === ServiceProvider["302.AI"] && (
+  const ai302ConfigComponent = accessStore.provider ===
+    ServiceProvider["302.AI"] && (
     <>
       <ListItem
-          title={Locale.Settings.Access.AI302.Endpoint.Title}
-          subTitle={
-            Locale.Settings.Access.AI302.Endpoint.SubTitle +
-            AI302.ExampleEndpoint
+        title={Locale.Settings.Access.AI302.Endpoint.Title}
+        subTitle={
+          Locale.Settings.Access.AI302.Endpoint.SubTitle + AI302.ExampleEndpoint
+        }
+      >
+        <input
+          aria-label={Locale.Settings.Access.AI302.Endpoint.Title}
+          type="text"
+          value={accessStore.ai302Url}
+          placeholder={AI302.ExampleEndpoint}
+          onChange={(e) =>
+            accessStore.update(
+              (access) => (access.ai302Url = e.currentTarget.value),
+            )
           }
-        >
-          <input
-            aria-label={Locale.Settings.Access.AI302.Endpoint.Title}
-            type="text"
-            value={accessStore.ai302Url}
-            placeholder={AI302.ExampleEndpoint}
-            onChange={(e) =>
-              accessStore.update(
-                (access) => (access.ai302Url = e.currentTarget.value),
-              )
-            }
-          ></input>
-        </ListItem>
-        <ListItem
-          title={Locale.Settings.Access.AI302.ApiKey.Title}
-          subTitle={Locale.Settings.Access.AI302.ApiKey.SubTitle}
-        >
-          <PasswordInput
-            aria-label={Locale.Settings.Access.AI302.ApiKey.Title}
-            value={accessStore.ai302ApiKey}
-            type="text"
-            placeholder={Locale.Settings.Access.AI302.ApiKey.Placeholder}
-            onChange={(e) => {
-              accessStore.update(
-                (access) => (access.ai302ApiKey = e.currentTarget.value),
-              );
-            }}
-          />
-        </ListItem>
-      </>
+        ></input>
+      </ListItem>
+      <ListItem
+        title={Locale.Settings.Access.AI302.ApiKey.Title}
+        subTitle={Locale.Settings.Access.AI302.ApiKey.SubTitle}
+      >
+        <PasswordInput
+          aria-label={Locale.Settings.Access.AI302.ApiKey.Title}
+          value={accessStore.ai302ApiKey}
+          type="text"
+          placeholder={Locale.Settings.Access.AI302.ApiKey.Placeholder}
+          onChange={(e) => {
+            accessStore.update(
+              (access) => (access.ai302ApiKey = e.currentTarget.value),
+            );
+          }}
+        />
+      </ListItem>
+    </>
   );
 
   const openclawConfigComponent = accessStore.provider ===
     ServiceProvider.OpenClaw && (
     <>
-      <ListItem
-        title="OpenClaw Bridge URL"
-        subTitle="OpenClaw bridge endpoint. Local deployment can keep the default /api/openclaw."
-      >
-        <input
-          aria-label="OpenClaw Bridge URL"
-          type="text"
-          value={accessStore.openclawBridgeUrl}
-          placeholder={ApiPath.OpenClaw}
-          onChange={(e) =>
-            accessStore.update(
-              (access) => (access.openclawBridgeUrl = e.currentTarget.value),
-            )
-          }
-        ></input>
-      </ListItem>
-      <ListItem
-        title="OpenClaw Gateway URL"
-        subTitle="Upstream OpenClaw gateway address."
-      >
-        <input
-          aria-label="OpenClaw Gateway URL"
-          type="text"
-          value={accessStore.openclawGatewayUrl}
-          placeholder={OpenClaw.ExampleEndpoint}
-          onChange={(e) =>
-            accessStore.update(
-              (access) => (access.openclawGatewayUrl = e.currentTarget.value),
-            )
-          }
-        ></input>
-      </ListItem>
-      <ListItem
-        title="OpenClaw Auth Token"
-        subTitle="Gateway bearer token or shared secret."
-      >
-        <PasswordInput
-          aria-label="OpenClaw Auth Token"
-          value={accessStore.openclawAuthToken}
-          type="text"
-          placeholder="token"
-          onChange={(e) => {
-            accessStore.update(
-              (access) => (access.openclawAuthToken = e.currentTarget.value),
-            );
-          }}
-        />
-      </ListItem>
-      <ListItem
-        title="OpenClaw Agent"
-        subTitle="Choose the agent used when a new OpenClaw chat is first bound. Existing chats keep their bound agent."
-      >
-        <Select
-          aria-label="OpenClaw Agent"
-          value={accessStore.openclawAgentId}
-          onChange={(e) =>
-            accessStore.update(
-              (access) => (access.openclawAgentId = e.currentTarget.value),
-            )
-          }
+      {isOpenClawAdmin && (
+        <>
+          <ListItem
+            title="OpenClaw Bridge URL"
+            subTitle="OpenClaw bridge endpoint. Local deployment can keep the default /api/openclaw."
+          >
+            <input
+              aria-label="OpenClaw Bridge URL"
+              type="text"
+              value={accessStore.openclawBridgeUrl}
+              placeholder={ApiPath.OpenClaw}
+              onChange={(e) =>
+                accessStore.update(
+                  (access) =>
+                    (access.openclawBridgeUrl = e.currentTarget.value),
+                )
+              }
+            ></input>
+          </ListItem>
+          <ListItem
+            title="OpenClaw Gateway URL"
+            subTitle="Upstream OpenClaw gateway address."
+          >
+            <input
+              aria-label="OpenClaw Gateway URL"
+              type="text"
+              value={accessStore.openclawGatewayUrl}
+              placeholder={OpenClaw.ExampleEndpoint}
+              onChange={(e) =>
+                accessStore.update(
+                  (access) =>
+                    (access.openclawGatewayUrl = e.currentTarget.value),
+                )
+              }
+            ></input>
+          </ListItem>
+          <ListItem
+            title="OpenClaw Auth Token"
+            subTitle="Gateway bearer token or shared secret."
+          >
+            <PasswordInput
+              aria-label="OpenClaw Auth Token"
+              value={accessStore.openclawAuthToken}
+              type="text"
+              placeholder="token"
+              onChange={(e) => {
+                accessStore.update(
+                  (access) =>
+                    (access.openclawAuthToken = e.currentTarget.value),
+                );
+              }}
+            />
+          </ListItem>
+        </>
+      )}
+      {shouldShowOpenClawAgentSelect && (
+        <ListItem
+          title="OpenClaw Agent"
+          subTitle="Choose the agent used when a new OpenClaw chat is first bound. Existing chats keep their bound agent."
         >
-          {(openclawAgents.length > 0
-            ? openclawAgents
-            : [{ id: "main", name: "main" }]
-          ).map((agent, index) => (
-            <option key={`${agent.id}-${index}`} value={agent.id}>
-              {agent.name || agent.id}
-            </option>
-          ))}
-        </Select>
-      </ListItem>
+          <Select
+            aria-label="OpenClaw Agent"
+            value={accessStore.openclawAgentId}
+            onChange={(e) =>
+              accessStore.update(
+                (access) => (access.openclawAgentId = e.currentTarget.value),
+              )
+            }
+          >
+            {visibleOpenclawAgents.map((agent, index) => (
+              <option key={`${agent.id}-${index}`} value={agent.id}>
+                {agent.name || agent.id}
+              </option>
+            ))}
+          </Select>
+        </ListItem>
+      )}
     </>
   );
 
@@ -1621,6 +1732,13 @@ export function Settings() {
           onClick={() => setShowOpenClawLogin(true)}
           bordered
         />
+        {isOpenClawAdmin && (
+          <IconButton
+            text="Monitor"
+            onClick={() => navigate(Path.OpenClawAdmin)}
+            bordered
+          />
+        )}
         {accessStore.openclawUser && (
           <IconButton
             text="Logout"
@@ -1952,6 +2070,9 @@ export function Settings() {
                             setShowOpenClawLogin(true);
                             return;
                           }
+                          applyOpenClawLogin(auth);
+                          setOpenclawAuthVersion((version) => version + 1);
+                          return;
                         }
                         accessStore.update(
                           (access) => (access.provider = nextProvider),
@@ -2070,18 +2191,7 @@ export function Settings() {
             }}
             onLogin={async (username, password) => {
               const auth = await loginOpenClaw(username, password);
-              accessStore.update((access) => {
-                access.provider = ServiceProvider.OpenClaw;
-                access.openclawUser = auth.username ?? "";
-                access.openclawAllowedAgents = auth.agents;
-                if (
-                  auth.agents.length > 0 &&
-                  !auth.agents.includes("*") &&
-                  !auth.agents.includes(access.openclawAgentId)
-                ) {
-                  access.openclawAgentId = auth.agents[0];
-                }
-              });
+              applyOpenClawLogin(auth);
               setOpenclawAuthVersion((version) => version + 1);
             }}
           />

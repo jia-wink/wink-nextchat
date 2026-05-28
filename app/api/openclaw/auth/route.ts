@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   OPENCLAW_AUTH_COOKIE,
+  OPENCLAW_DEVICE_COOKIE,
   authenticateOpenClawUser,
   createOpenClawAuthCookie,
+  readOpenClawDeviceId,
   readOpenClawAuthSession,
   readRouteJson,
 } from "../shared";
+import {
+  createOpenClawDeviceId,
+  logoutOpenClawPresence,
+  touchOpenClawPresence,
+} from "../presence-store";
 
 export async function GET(req: NextRequest) {
   const session = readOpenClawAuthSession(req);
@@ -17,7 +24,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await readRouteJson<{ username?: string; password?: string }>(req);
+  const body = await readRouteJson<{ username?: string; password?: string }>(
+    req,
+  );
   const session = authenticateOpenClawUser(
     body.username?.trim() ?? "",
     body.password ?? "",
@@ -25,7 +34,10 @@ export async function POST(req: NextRequest) {
 
   if (!session) {
     return NextResponse.json(
-      { authenticated: false, message: "Invalid OpenClaw username or password" },
+      {
+        authenticated: false,
+        message: "Invalid OpenClaw username or password",
+      },
       { status: 401 },
     );
   }
@@ -35,17 +47,31 @@ export async function POST(req: NextRequest) {
     username: session.username,
     agents: session.agents,
   });
-  response.cookies.set(OPENCLAW_AUTH_COOKIE, createOpenClawAuthCookie(session), {
+  const deviceId = readOpenClawDeviceId(req) ?? createOpenClawDeviceId();
+  await touchOpenClawPresence({ req, session, deviceId });
+  response.cookies.set(
+    OPENCLAW_AUTH_COOKIE,
+    createOpenClawAuthCookie(session),
+    {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
+    },
+  );
+  response.cookies.set(OPENCLAW_DEVICE_COOKIE, deviceId, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: 60 * 60 * 24 * 365,
   });
   return response;
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
+  await logoutOpenClawPresence(readOpenClawDeviceId(req));
   const response = NextResponse.json({ authenticated: false });
   response.cookies.set(OPENCLAW_AUTH_COOKIE, "", {
     httpOnly: true,

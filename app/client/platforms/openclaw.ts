@@ -53,6 +53,32 @@ export type OpenClawAuthState = {
   agents: string[];
 };
 
+export type OpenClawPresenceDevice = {
+  deviceId: string;
+  username: string;
+  agents: string[];
+  ip: string;
+  location: string;
+  userAgent: string;
+  createdAt: string;
+  lastSeenAt: string;
+  loggedOutAt?: string;
+  status: "online" | "offline";
+};
+
+export type OpenClawAdminSessionGroup = {
+  username: string;
+  onlineCount: number;
+  totalCount: number;
+  devices: OpenClawPresenceDevice[];
+};
+
+export type OpenClawAdminSessionsResponse = {
+  generatedAt: string;
+  onlineWindowMs: number;
+  accounts: OpenClawAdminSessionGroup[];
+};
+
 type OpenClawJsonCompletion = {
   choices?: Array<{
     delta?: { content?: string };
@@ -183,6 +209,23 @@ export async function logoutOpenClaw(): Promise<void> {
   await fetch(resolveBridgePath(OpenClaw.AuthPath), {
     method: "DELETE",
   });
+}
+
+export async function heartbeatOpenClawPresence(): Promise<void> {
+  await fetch(resolveBridgePath("presence"), {
+    method: "POST",
+  });
+}
+
+export async function getOpenClawAdminSessions(): Promise<OpenClawAdminSessionsResponse> {
+  const response = await fetch(resolveBridgePath("admin/sessions"), {
+    method: "GET",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.message || "Failed to load OpenClaw sessions");
+  }
+  return payload;
 }
 
 function isAbsoluteUrl(value: string): boolean {
@@ -729,7 +772,11 @@ function isLegacyOpenClawSessionKey(
   if (normalized.includes(":nextchat:direct:")) {
     return true;
   }
-  if (agentId && !normalized.includes(`:nextchat:${agentId}:`)) {
+  if (
+    agentId &&
+    !normalized.includes(`agent:${agentId}:nextchat:`) &&
+    !normalized.includes(`:nextchat:${agentId}:`)
+  ) {
     return true;
   }
   return false;

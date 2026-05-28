@@ -19,6 +19,25 @@ export const NextChatConfigSchema: ChannelConfigSchema = {
       defaultAgentId: { type: "string" },
       sessionTtl: { type: "number" },
       historySyncLimit: { type: "number" },
+      messageAggregation: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enabled: { type: "boolean" },
+          debounceMs: { type: "number" },
+          agents: {
+            type: "object",
+            additionalProperties: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                aggregateReplies: { type: "boolean" },
+                debounceMs: { type: "number" },
+              },
+            },
+          },
+        },
+      },
       accounts: {
         type: "object",
         additionalProperties: {

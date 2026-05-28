@@ -1,0 +1,220 @@
+.openclaw-admin {
+  --monitor-ink: var(--black);
+  --monitor-muted: rgba(127, 127, 127, 0.9);
+  --monitor-line: rgba(127, 127, 127, 0.18);
+  --monitor-panel: color-mix(in srgb, var(--white) 92%, #dff7ef);
+  --monitor-accent: #1f9d72;
+  --monitor-warn: #b66b18;
+
+  height: 100%;
+  overflow: auto;
+  padding: 22px;
+  color: var(--monitor-ink);
+  background: linear-gradient(135deg, rgba(31, 157, 114, 0.13), transparent 32%),
+    radial-gradient(
+      circle at 84% 10%,
+      rgba(57, 132, 196, 0.15),
+      transparent 28%
+    ),
+    var(--white);
+}
+
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+
+  div {
+    min-height: 86px;
+    padding: 18px;
+    border: 1px solid var(--monitor-line);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--monitor-panel) 88%, transparent);
+    box-shadow: 0 16px 50px rgba(0, 0, 0, 0.06);
+  }
+
+  span {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 32px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  small {
+    color: var(--monitor-muted);
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+}
+
+.state-panel {
+  padding: 18px;
+  border: 1px dashed var(--monitor-line);
+  border-radius: 8px;
+  color: var(--monitor-muted);
+  background: rgba(127, 127, 127, 0.06);
+}
+
+.account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-section {
+  border: 1px solid var(--monitor-line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--white) 94%, #ebfff7);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.08);
+}
+
+.account-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--monitor-line);
+  background: linear-gradient(90deg, rgba(31, 157, 114, 0.12), transparent);
+
+  h2 {
+    margin: 0 0 4px;
+    font-size: 20px;
+    line-height: 1.2;
+  }
+
+  p {
+    margin: 0;
+    color: var(--monitor-muted);
+    font-size: 13px;
+  }
+}
+
+.account-badge {
+  padding: 7px 10px;
+  border: 1px solid var(--monitor-line);
+  border-radius: 999px;
+  color: var(--monitor-accent);
+  background: rgba(31, 157, 114, 0.1);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.device-table {
+  display: grid;
+}
+
+.device-heading,
+.device-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.35fr) minmax(180px, 0.9fr) minmax(
+      190px,
+      0.95fr
+    ) 90px;
+  gap: 14px;
+  align-items: center;
+}
+
+.device-heading {
+  padding: 12px 20px;
+  color: var(--monitor-muted);
+  background: rgba(127, 127, 127, 0.06);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.device-row {
+  padding: 16px 20px;
+
+  &:not(:last-child) {
+    border-bottom: 1px solid var(--monitor-line);
+  }
+}
+
+.device-primary {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 5px rgba(127, 127, 127, 0.12);
+}
+
+.status-online {
+  background: var(--monitor-accent);
+  box-shadow: 0 0 0 5px rgba(31, 157, 114, 0.16);
+}
+
+.status-offline {
+  background: var(--monitor-warn);
+  box-shadow: 0 0 0 5px rgba(182, 107, 24, 0.14);
+}
+
+.device-name {
+  font-weight: 750;
+  margin-bottom: 5px;
+}
+
+.device-agent {
+  color: var(--monitor-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.device-cell {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+
+  span,
+  small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--monitor-muted);
+    font-size: 12px;
+  }
+}
+
+.device-status {
+  width: fit-content;
+  padding: 7px 9px;
+  border-radius: 999px;
+  color: var(--monitor-muted);
+  background: rgba(127, 127, 127, 0.1);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+@media only screen and (max-width: 900px) {
+  .summary-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .device-heading {
+    display: none;
+  }
+
+  .device-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+}

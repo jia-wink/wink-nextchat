@@ -23,6 +23,7 @@ import {
   upsertNextChatSession,
 } from "./runtime.js";
 import type {
+  NextChatChannelConfig,
   NextChatInboundAttachment,
   NextChatInboundMessage,
   NextChatMessageRequest,
@@ -41,6 +42,32 @@ const NEXTCHAT_GENERIC_TITLES = new Set([
 ]);
 
 type EnvelopeFormatOptions = ReturnType<typeof resolveEnvelopeFormatOptions>;
+type NextChatDispatchResult = {
+  session: NextChatSessionRecord;
+  content: string;
+  mediaUrls: string[];
+  error?: string;
+};
+type PreparedNextChatDispatch = {
+  cfg: OpenClawConfig;
+  session: NextChatSessionRecord;
+  rawBody: string;
+  bodyForAgent: string;
+  clientMessageId: string;
+  stream: boolean;
+  writeDelta?: (delta: string) => void;
+};
+type QueuedNextChatDispatch = {
+  prepared: PreparedNextChatDispatch;
+  resolve: (result: NextChatDispatchResult) => void;
+};
+type NextChatAggregationBuffer = {
+  items: QueuedNextChatDispatch[];
+  timeout: ReturnType<typeof setTimeout> | null;
+  debounceMs: number;
+};
+
+const aggregationBuffers = new Map<string, NextChatAggregationBuffer>();
 
 function sanitizeEnvelopeHeaderPart(value: string): string {
   return value
@@ -124,6 +151,25 @@ const nextchatRuntime = {
   },
 };
 
+function createSessionBoundRuntime(session: NextChatSessionRecord) {
+  if (!session.explicitAgentId) {
+    return nextchatRuntime;
+  }
+
+  return {
+    channel: {
+      ...nextchatRuntime.channel,
+      routing: {
+        resolveAgentRoute: () => ({
+          agentId: session.agentId,
+          sessionKey: session.sessionKey,
+          accountId: session.accountId,
+        }),
+      },
+    },
+  };
+}
+
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -203,6 +249,154 @@ function buildAssistantMarkdown(params: { text?: string; mediaUrls?: string[] })
     return text;
   }
   return `${text}\n\n${mediaBlock}`;
+}
+
+function resolveMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.max(0, Math.trunc(value));
+}
+
+function resolveNextChatConfig(cfg: OpenClawConfig): NextChatChannelConfig {
+  return ((cfg.channels as Record<string, unknown> | undefined)?.nextchat ??
+    {}) as NextChatChannelConfig;
+}
+
+function resolveLegacyNextChatDebounceMs(cfg: OpenClawConfig): number {
+  const inbound = cfg.messages?.inbound;
+  return (
+    resolveMs((inbound?.byChannel as Record<string, unknown> | undefined)?.[NEXTCHAT_CHANNEL]) ??
+    resolveMs(inbound?.debounceMs) ??
+    0
+  );
+}
+
+function resolveNextChatAggregationMs(cfg: OpenClawConfig, agentId: string): number {
+  const nextchat = resolveNextChatConfig(cfg);
+  const aggregation = nextchat.messageAggregation;
+  const legacyMs = resolveLegacyNextChatDebounceMs(cfg);
+  if (!aggregation) {
+    return legacyMs;
+  }
+
+  const agentConfig = aggregation.agents?.[agentId];
+  const shouldAggregate = agentConfig?.aggregateReplies ?? aggregation.enabled ?? true;
+  if (!shouldAggregate) {
+    return 0;
+  }
+  return resolveMs(agentConfig?.debounceMs) ?? resolveMs(aggregation.debounceMs) ?? legacyMs;
+}
+
+function withNextChatCoreDebounceDisabled(cfg: OpenClawConfig): OpenClawConfig {
+  const messages = cfg.messages ?? {};
+  const inbound = messages.inbound ?? {};
+  return {
+    ...cfg,
+    messages: {
+      ...messages,
+      inbound: {
+        ...inbound,
+        byChannel: {
+          ...(inbound.byChannel ?? {}),
+          [NEXTCHAT_CHANNEL]: 0,
+        },
+      },
+    },
+  } as OpenClawConfig;
+}
+
+function buildAggregationKey(session: NextChatSessionRecord): string {
+  return [
+    NEXTCHAT_CHANNEL,
+    session.accountId || "default",
+    session.agentId || "main",
+    session.sessionId,
+  ].join(":");
+}
+
+function mergePreparedDispatches(items: QueuedNextChatDispatch[]): PreparedNextChatDispatch {
+  const latest = items[items.length - 1].prepared;
+  const rawBody = items
+    .map((item) => item.prepared.rawBody.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const bodyForAgent = items
+    .map((item) => item.prepared.bodyForAgent.trim())
+    .filter(Boolean)
+    .join("\n\n");
+  const writeDeltaCallbacks = items
+    .map((item) => item.prepared.writeDelta)
+    .filter((callback): callback is (delta: string) => void => Boolean(callback));
+
+  return {
+    ...latest,
+    rawBody: rawBody || latest.rawBody,
+    bodyForAgent: bodyForAgent || latest.bodyForAgent,
+    writeDelta: writeDeltaCallbacks.length
+      ? (delta) => {
+          for (const callback of writeDeltaCallbacks) {
+            callback(delta);
+          }
+        }
+      : undefined,
+  };
+}
+
+async function flushAggregationBuffer(key: string, buffer: NextChatAggregationBuffer): Promise<void> {
+  if (aggregationBuffers.get(key) === buffer) {
+    aggregationBuffers.delete(key);
+  }
+  if (buffer.timeout) {
+    clearTimeout(buffer.timeout);
+    buffer.timeout = null;
+  }
+  const items = buffer.items.splice(0);
+  if (items.length === 0) {
+    return;
+  }
+  const result = await dispatchPreparedNextChatMessage(mergePreparedDispatches(items));
+  for (const item of items) {
+    item.resolve(result);
+  }
+}
+
+function scheduleAggregationFlush(key: string, buffer: NextChatAggregationBuffer): void {
+  if (buffer.timeout) {
+    clearTimeout(buffer.timeout);
+  }
+  buffer.timeout = setTimeout(() => {
+    void flushAggregationBuffer(key, buffer);
+  }, buffer.debounceMs);
+  buffer.timeout.unref?.();
+}
+
+function enqueuePreparedNextChatMessage(
+  prepared: PreparedNextChatDispatch,
+  debounceMs: number,
+): Promise<NextChatDispatchResult> {
+  if (!(debounceMs > 0)) {
+    return dispatchPreparedNextChatMessage(prepared);
+  }
+
+  const key = buildAggregationKey(prepared.session);
+  return new Promise((resolve) => {
+    const existing = aggregationBuffers.get(key);
+    if (existing) {
+      existing.items.push({ prepared, resolve });
+      existing.debounceMs = debounceMs;
+      scheduleAggregationFlush(key, existing);
+      return;
+    }
+
+    const buffer: NextChatAggregationBuffer = {
+      items: [{ prepared, resolve }],
+      timeout: null,
+      debounceMs,
+    };
+    aggregationBuffers.set(key, buffer);
+    scheduleAggregationFlush(key, buffer);
+  });
 }
 
 function normalizeSessionTitle(value: string | undefined): string | undefined {
@@ -337,50 +531,11 @@ export async function handleNextChatSessionRequest(
   }
 }
 
-export async function dispatchNextChatMessage(params: {
-  body: NextChatMessageRequest;
-  writeDelta?: (delta: string) => void;
-  stream: boolean;
-}): Promise<{
-  session: NextChatSessionRecord;
-  content: string;
-  mediaUrls: string[];
-  error?: string;
-} | null> {
-  let session: NextChatSessionRecord | undefined;
+async function dispatchPreparedNextChatMessage(
+  prepared: PreparedNextChatDispatch,
+): Promise<NextChatDispatchResult> {
+  const { cfg, session, clientMessageId } = prepared;
   try {
-    const cfg = loadNextChatConfigSnapshot() as OpenClawConfig;
-    const existing = getNextChatSession({
-      sessionKey: params.body.sessionKey?.trim(),
-      sessionId: params.body.sessionId?.trim() || params.body.clientSessionId?.trim(),
-    });
-    session =
-      existing ??
-      buildSessionRecord({
-        cfg,
-        request: params.body,
-      });
-    session.model = params.body.model?.trim() || session.model;
-    session.clientLabel = normalizeSessionTitle(params.body.clientLabel) || session.clientLabel;
-    session.title = resolveSessionTitle({
-      title: params.body.title,
-      clientLabel: session.clientLabel,
-      createdAt: session.createdAt,
-      fallbackTitle: session.title,
-    });
-    upsertNextChatSession(session);
-
-    const userMessage = getLatestUserMessage(params.body.messages);
-    const normalized = normalizeMessageContent(userMessage);
-    const attachmentUrls = [
-      ...normalized.attachmentUrls,
-      ...normalizeAttachmentUrls(params.body.attachments),
-    ];
-    const bodyForAgent = buildAssistantMarkdown({
-      text: normalized.bodyForAgent || normalized.rawBody,
-      mediaUrls: attachmentUrls,
-    });
-    const clientMessageId = String(params.body.clientMessageId ?? randomUUID()).trim();
     startNextChatReply({
       sessionKey: session.sessionKey,
       sessionId: session.sessionId,
@@ -391,8 +546,8 @@ export async function dispatchNextChatMessage(params: {
     });
 
     await dispatchInboundDirectDmWithRuntime({
-      cfg,
-      runtime: nextchatRuntime,
+      cfg: withNextChatCoreDebounceDisabled(cfg),
+      runtime: createSessionBoundRuntime(session),
       channel: NEXTCHAT_CHANNEL,
       channelLabel: "NextChat",
       accountId: session.accountId,
@@ -404,8 +559,8 @@ export async function dispatchNextChatMessage(params: {
       senderAddress: `nextchat:${session.sessionId}`,
       recipientAddress: `nextchat:${session.sessionId}`,
       conversationLabel: session.title?.trim() || session.sessionId,
-      rawBody: normalized.rawBody || bodyForAgent,
-      bodyForAgent,
+      rawBody: prepared.rawBody || prepared.bodyForAgent,
+      bodyForAgent: prepared.bodyForAgent,
       messageId: clientMessageId,
       provider: NEXTCHAT_CHANNEL,
       surface: NEXTCHAT_CHANNEL,
@@ -423,8 +578,8 @@ export async function dispatchNextChatMessage(params: {
           delta,
           mediaUrls,
         });
-        if (delta && params.writeDelta) {
-          params.writeDelta(delta);
+        if (delta && prepared.writeDelta) {
+          prepared.writeDelta(delta);
         }
       },
       onRecordError: (error) => {
@@ -455,26 +610,77 @@ export async function dispatchNextChatMessage(params: {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const normalizedMessage = message.trim() || "OpenClaw dispatch failed.";
-    if (session) {
-      failNextChatReply({
-        sessionKey: session.sessionKey,
-        sessionId: session.sessionId,
-        error: normalizedMessage,
-      });
-    }
-    if (params.stream && params.writeDelta) {
-      params.writeDelta(`[OpenClaw error] ${normalizedMessage}`);
+    failNextChatReply({
+      sessionKey: session.sessionKey,
+      sessionId: session.sessionId,
+      error: normalizedMessage,
+    });
+    if (prepared.stream && prepared.writeDelta) {
+      prepared.writeDelta(`[OpenClaw error] ${normalizedMessage}`);
     }
     console.error("[nextchat] dispatchNextChatMessage failed:", error);
-    if (!session) {
-      return null;
-    }
     return {
       session,
       content: `[OpenClaw error] ${normalizedMessage}`,
       mediaUrls: [],
       error: normalizedMessage,
     };
+  }
+}
+
+export async function dispatchNextChatMessage(params: {
+  body: NextChatMessageRequest;
+  writeDelta?: (delta: string) => void;
+  stream: boolean;
+}): Promise<NextChatDispatchResult | null> {
+  try {
+    const cfg = loadNextChatConfigSnapshot() as OpenClawConfig;
+    const existing = getNextChatSession({
+      sessionKey: params.body.sessionKey?.trim(),
+      sessionId: params.body.sessionId?.trim() || params.body.clientSessionId?.trim(),
+    });
+    const session =
+      existing ??
+      buildSessionRecord({
+        cfg,
+        request: params.body,
+      });
+    session.model = params.body.model?.trim() || session.model;
+    session.clientLabel = normalizeSessionTitle(params.body.clientLabel) || session.clientLabel;
+    session.title = resolveSessionTitle({
+      title: params.body.title,
+      clientLabel: session.clientLabel,
+      createdAt: session.createdAt,
+      fallbackTitle: session.title,
+    });
+    upsertNextChatSession(session);
+
+    const userMessage = getLatestUserMessage(params.body.messages);
+    const normalized = normalizeMessageContent(userMessage);
+    const attachmentUrls = [
+      ...normalized.attachmentUrls,
+      ...normalizeAttachmentUrls(params.body.attachments),
+    ];
+    const bodyForAgent = buildAssistantMarkdown({
+      text: normalized.bodyForAgent || normalized.rawBody,
+      mediaUrls: attachmentUrls,
+    });
+    const clientMessageId = String(params.body.clientMessageId ?? randomUUID()).trim();
+    return await enqueuePreparedNextChatMessage(
+      {
+        cfg,
+        session,
+        rawBody: normalized.rawBody || bodyForAgent,
+        bodyForAgent,
+        clientMessageId,
+        stream: params.stream,
+        writeDelta: params.writeDelta,
+      },
+      resolveNextChatAggregationMs(cfg, session.agentId),
+    );
+  } catch (error) {
+    console.error("[nextchat] dispatchNextChatMessage failed:", error);
+    return null;
   }
 }
 

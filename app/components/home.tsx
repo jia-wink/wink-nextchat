@@ -27,13 +27,25 @@ import { useAppConfig } from "../store/config";
 import { AuthPage } from "./auth";
 import { getClientConfig } from "../config/client";
 import { type ClientApi, getClientApi } from "../client/api";
-import { useAccessStore } from "../store";
+import { useAccessStore, useChatStore } from "../store";
 import clsx from "clsx";
 import {
   getOpenClawAuthState,
+  heartbeatOpenClawPresence,
   loginOpenClaw,
+  type OpenClawAuthState,
 } from "../client/platforms/openclaw";
 import { OpenClawAuthModal } from "./openclaw-auth-modal";
+
+const OPENCLAW_FALLBACK_AGENT_ID = "main";
+const OPENCLAW_FALLBACK_MODEL_ID = "default";
+
+function getFirstScopedOpenClawAgent(
+  agents: string[],
+  fallback = OPENCLAW_FALLBACK_AGENT_ID,
+) {
+  return agents.find((agent) => agent && agent !== "*") ?? fallback;
+}
 
 export function Loading(props: { noLogo?: boolean }) {
   return (
@@ -81,6 +93,13 @@ const Sd = dynamic(async () => (await import("./sd")).Sd, {
 
 const McpMarketPage = dynamic(
   async () => (await import("./mcp-market")).McpMarketPage,
+  {
+    loading: () => <Loading noLogo />,
+  },
+);
+
+const OpenClawAdminPage = dynamic(
+  async () => (await import("./openclaw-admin")).OpenClawAdminPage,
   {
     loading: () => <Loading noLogo />,
   },
@@ -206,6 +225,7 @@ function Screen() {
             <Route path={Path.Chat} element={<Chat />} />
             <Route path={Path.Settings} element={<Settings />} />
             <Route path={Path.McpMarket} element={<McpMarketPage />} />
+            <Route path={Path.OpenClawAdmin} element={<OpenClawAdminPage />} />
           </Routes>
         </WindowContent>
       </>
@@ -226,9 +246,48 @@ function Screen() {
 
 function OpenClawStartupAuthGate() {
   const accessStore = useAccessStore();
+  const chatStore = useChatStore();
+  const config = useAppConfig();
   const [dismissed, setDismissed] = useState(false);
   const [checkedStartupAuth, setCheckedStartupAuth] = useState(false);
   const [showModal, setShowModal] = useState(false);
+
+  const applyOpenClawAuth = (auth: OpenClawAuthState) => {
+    const nextAgentId = getFirstScopedOpenClawAgent(auth.agents);
+    const currentOpenClawModel =
+      config.modelConfig.providerName === ServiceProvider.OpenClaw
+        ? config.modelConfig.model
+        : OPENCLAW_FALLBACK_MODEL_ID;
+
+    accessStore.update((access) => {
+      access.useCustomConfig = true;
+      access.provider = ServiceProvider.OpenClaw;
+      access.openclawUser = auth.username ?? "";
+      access.openclawAllowedAgents = auth.agents;
+      access.openclawAgentId = nextAgentId;
+    });
+
+    config.update((config) => {
+      config.modelConfig.providerName = ServiceProvider.OpenClaw;
+      config.modelConfig.model = currentOpenClawModel as any;
+    });
+
+    const currentSession = chatStore.currentSession();
+    if (!currentSession || currentSession.messages.length > 0) {
+      return;
+    }
+
+    chatStore.updateTargetSession(currentSession, (session) => {
+      session.mask.modelConfig.providerName = ServiceProvider.OpenClaw;
+      session.mask.modelConfig.model = currentOpenClawModel as any;
+      session.openclaw = {
+        ...session.openclaw,
+        channel: "nextchat",
+        agentId: nextAgentId,
+        connectionStatus: session.openclaw?.connectionStatus ?? "connecting",
+      };
+    });
+  };
 
   useEffect(() => {
     if (
@@ -248,15 +307,35 @@ function OpenClawStartupAuthGate() {
         });
         if (!auth.authenticated) {
           setShowModal(true);
+        } else {
+          applyOpenClawAuth(auth);
         }
       })
       .finally(() => setCheckedStartupAuth(true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     accessStore.openclawEnabled,
     accessStore.openclawUser,
     checkedStartupAuth,
     dismissed,
   ]);
+
+  useEffect(() => {
+    if (!accessStore.openclawUser) {
+      return;
+    }
+
+    heartbeatOpenClawPresence().catch((error) => {
+      console.warn("[OpenClaw Presence] heartbeat failed", error);
+    });
+    const timer = setInterval(() => {
+      heartbeatOpenClawPresence().catch((error) => {
+        console.warn("[OpenClaw Presence] heartbeat failed", error);
+      });
+    }, 60 * 1000);
+
+    return () => clearInterval(timer);
+  }, [accessStore.openclawUser]);
 
   if (!showModal) {
     return null;
@@ -281,18 +360,7 @@ function OpenClawStartupAuthGate() {
       }}
       onLogin={async (username, password) => {
         const auth = await loginOpenClaw(username, password);
-        accessStore.update((access) => {
-          access.provider = ServiceProvider.OpenClaw;
-          access.openclawUser = auth.username ?? "";
-          access.openclawAllowedAgents = auth.agents;
-          if (
-            auth.agents.length > 0 &&
-            !auth.agents.includes("*") &&
-            !auth.agents.includes(access.openclawAgentId)
-          ) {
-            access.openclawAgentId = auth.agents[0];
-          }
-        });
+        applyOpenClawAuth(auth);
         close();
       }}
     />

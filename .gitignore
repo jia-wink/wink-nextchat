@@ -59,3 +59,7 @@ app/mcp/mcp_config.json
 # private operations docs
 docs/private/
 docs/openclaw-nextchat-*.md
+
+# local runtime data
+.nextchat/
+openclaw-presence.json

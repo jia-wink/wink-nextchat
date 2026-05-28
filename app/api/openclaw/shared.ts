@@ -65,6 +65,7 @@ export type OpenClawAuthSession = {
 };
 
 export const OPENCLAW_AUTH_COOKIE = "nextchat-openclaw-auth";
+export const OPENCLAW_DEVICE_COOKIE = "nextchat-openclaw-device";
 
 const serverConfig = getServerSideConfig() as OpenClawServerConfig;
 
@@ -275,6 +276,26 @@ export function readOpenClawAuthSession(
   } catch {
     return undefined;
   }
+}
+
+export function getRequestIp(req: NextRequest): string {
+  const forwardedFor = req.headers.get("x-forwarded-for");
+  const forwardedIp = forwardedFor?.split(",").at(0)?.trim();
+  const raw =
+    forwardedIp ||
+    req.headers.get("x-real-ip")?.trim() ||
+    (req as NextRequest & { ip?: string }).ip?.trim() ||
+    "";
+
+  return raw
+    .replace(/^::ffff:/, "")
+    .replace(/^\[|\]$/g, "")
+    .replace(/:\d+$/, "");
+}
+
+export function readOpenClawDeviceId(req: NextRequest): string | undefined {
+  const deviceId = req.cookies.get(OPENCLAW_DEVICE_COOKIE)?.value?.trim();
+  return deviceId || undefined;
 }
 
 export function isAgentAllowed(

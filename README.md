@@ -54,6 +54,7 @@ OPENCLAW_SHARED_SECRET=replace-with-your-nextchat-shared-secret
 OPENCLAW_DEFAULT_AGENT_ID=main
 NEXTCHAT_PUBLIC_BASE_URL=https://your-chat-domain.example.com
 NEXTCHAT_UPLOAD_DIR=/var/lib/wink-nextchat/uploads
+NEXTCHAT_OPENCLAW_PRESENCE_STORE=/var/lib/wink-nextchat/openclaw-presence.json
 ```
 
 The real `.env.production`, `.env.local`, and other local environment files are intentionally ignored by git.

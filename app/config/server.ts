@@ -100,6 +100,7 @@ declare global {
       OPENCLAW_ACCOUNT_ID?: string;
       OPENCLAW_DEFAULT_AGENT_ID?: string;
       OPENCLAW_CONFIG_PATH?: string;
+      NEXTCHAT_OPENCLAW_PRESENCE_STORE?: string;
       NEXTCHAT_PUBLIC_BASE_URL?: string;
       NEXTCHAT_UPLOAD_DIR?: string;
       NEXTCHAT_UPLOAD_MAX_BYTES?: string;
@@ -277,6 +278,7 @@ export const getServerSideConfig = () => {
     openclawAccountId: process.env.OPENCLAW_ACCOUNT_ID,
     openclawDefaultAgentId: process.env.OPENCLAW_DEFAULT_AGENT_ID,
     openclawConfigPath: process.env.OPENCLAW_CONFIG_PATH,
+    nextchatOpenClawPresenceStore: process.env.NEXTCHAT_OPENCLAW_PRESENCE_STORE,
     nextchatPublicBaseUrl: process.env.NEXTCHAT_PUBLIC_BASE_URL,
     nextchatUploadDir: process.env.NEXTCHAT_UPLOAD_DIR,
     nextchatUploadMaxBytes: process.env.NEXTCHAT_UPLOAD_MAX_BYTES,
