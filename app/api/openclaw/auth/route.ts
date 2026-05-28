@@ -48,7 +48,9 @@ export async function POST(req: NextRequest) {
     agents: session.agents,
   });
   const deviceId = readOpenClawDeviceId(req) ?? createOpenClawDeviceId();
-  await touchOpenClawPresence({ req, session, deviceId });
+  await touchOpenClawPresence({ req, session, deviceId }).catch((error) => {
+    console.warn("[OpenClaw Presence] failed to record login", error);
+  });
   response.cookies.set(
     OPENCLAW_AUTH_COOKIE,
     createOpenClawAuthCookie(session),
@@ -71,7 +73,9 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  await logoutOpenClawPresence(readOpenClawDeviceId(req));
+  await logoutOpenClawPresence(readOpenClawDeviceId(req)).catch((error) => {
+    console.warn("[OpenClaw Presence] failed to record logout", error);
+  });
   const response = NextResponse.json({ authenticated: false });
   response.cookies.set(OPENCLAW_AUTH_COOKIE, "", {
     httpOnly: true,

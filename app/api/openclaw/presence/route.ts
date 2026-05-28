@@ -19,9 +19,18 @@ export async function POST(req: NextRequest) {
   }
 
   const deviceId = readOpenClawDeviceId(req) ?? createOpenClawDeviceId();
-  await touchOpenClawPresence({ req, session, deviceId });
+  const recorded = await touchOpenClawPresence({
+    req,
+    session,
+    deviceId,
+  })
+    .then(() => true)
+    .catch((error) => {
+      console.warn("[OpenClaw Presence] heartbeat failed", error);
+      return false;
+    });
 
-  const response = NextResponse.json({ ok: true });
+  const response = NextResponse.json({ ok: true, recorded });
   response.cookies.set(OPENCLAW_DEVICE_COOKIE, deviceId, {
     httpOnly: true,
     sameSite: "lax",
