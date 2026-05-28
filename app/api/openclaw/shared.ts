@@ -66,19 +66,6 @@ export type OpenClawAuthSession = {
 
 export const OPENCLAW_AUTH_COOKIE = "nextchat-openclaw-auth";
 
-const BUILTIN_OPENCLAW_USERS: OpenClawAuthUser[] = [
-  {
-    username: "admin",
-    password: "openclaw-admin",
-    agents: ["*"],
-  },
-  {
-    username: "tarot",
-    password: "openclaw-tarot",
-    agents: ["tarot"],
-  },
-];
-
 const serverConfig = getServerSideConfig() as OpenClawServerConfig;
 
 export function resolveGatewayUrl(input?: string): string {
@@ -120,7 +107,9 @@ export function resolveAccountId(input?: string, agentId?: string): string {
   if (configured && (!resolvedAgentId || resolvedAgentId === "main")) {
     return configured;
   }
-  return resolvedAgentId && resolvedAgentId !== "main" ? resolvedAgentId : "default";
+  return resolvedAgentId && resolvedAgentId !== "main"
+    ? resolvedAgentId
+    : "default";
 }
 
 export function buildSessionKey(params: {
@@ -128,10 +117,11 @@ export function buildSessionKey(params: {
   clientSessionId?: string;
   agentId: string;
 }): string {
-  const sessionId = (params.sessionId || params.clientSessionId || randomUUID()).replace(
-    /[^a-zA-Z0-9:_-]/g,
-    "-",
-  );
+  const sessionId = (
+    params.sessionId ||
+    params.clientSessionId ||
+    randomUUID()
+  ).replace(/[^a-zA-Z0-9:_-]/g, "-");
   return `agent:${params.agentId}:nextchat:${sessionId}`;
 }
 
@@ -143,10 +133,14 @@ export function buildGatewayHeaders(params: {
 }): HeadersInit {
   return {
     "Content-Type": "application/json",
-    ...(params.authToken ? { Authorization: `Bearer ${params.authToken}` } : {}),
+    ...(params.authToken
+      ? { Authorization: `Bearer ${params.authToken}` }
+      : {}),
     "x-openclaw-agent-id": params.agentId,
     "x-nextchat-account-id": resolveAccountId(params.accountId, params.agentId),
-    ...(params.sessionKey ? { "x-openclaw-session-key": params.sessionKey } : {}),
+    ...(params.sessionKey
+      ? { "x-openclaw-session-key": params.sessionKey }
+      : {}),
     "x-openclaw-message-channel": "nextchat",
   };
 }
@@ -160,8 +154,12 @@ export function buildPluginHeaders(params: {
   const agentId = resolveAgentId(params.agentId);
   return {
     "Content-Type": "application/json",
-    ...(params.authToken ? { Authorization: `Bearer ${params.authToken}` } : {}),
-    ...(params.sharedSecret ? { "x-nextchat-secret": params.sharedSecret } : {}),
+    ...(params.authToken
+      ? { Authorization: `Bearer ${params.authToken}` }
+      : {}),
+    ...(params.sharedSecret
+      ? { "x-nextchat-secret": params.sharedSecret }
+      : {}),
     "x-nextchat-account-id": resolveAccountId(params.accountId, agentId),
   };
 }
@@ -189,7 +187,7 @@ function safeEqual(a: string, b: string): boolean {
 function getOpenClawUsers(): OpenClawAuthUser[] {
   const raw = process.env.OPENCLAW_AUTH_USERS?.trim();
   if (!raw) {
-    return BUILTIN_OPENCLAW_USERS;
+    return [];
   }
 
   try {
@@ -205,9 +203,10 @@ function getOpenClawUsers(): OpenClawAuthUser[] {
       .filter(
         (user) => user.username && user.password && user.agents.length > 0,
       );
-    return users.length > 0 ? users : BUILTIN_OPENCLAW_USERS;
+    return users;
   } catch {
-    return BUILTIN_OPENCLAW_USERS;
+    console.warn("[OpenClaw] invalid OPENCLAW_AUTH_USERS JSON");
+    return [];
   }
 }
 
@@ -257,11 +256,16 @@ export function readOpenClawAuthSession(
   }
 
   try {
-    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    const username = typeof parsed.username === "string" ? parsed.username.trim() : "";
+    const parsed = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8"),
+    );
+    const username =
+      typeof parsed.username === "string" ? parsed.username.trim() : "";
     const agents = Array.isArray(parsed.agents)
       ? parsed.agents
-          .map((agent: unknown) => (typeof agent === "string" ? agent.trim() : ""))
+          .map((agent: unknown) =>
+            typeof agent === "string" ? agent.trim() : "",
+          )
           .filter(Boolean)
       : [];
     if (!username || agents.length === 0) {
@@ -290,7 +294,8 @@ export function requireOpenClawAgent(
   }
 
   const agentId = resolveAgentId(
-    requestedAgentId || (session.agents.includes("*") ? undefined : session.agents[0]),
+    requestedAgentId ||
+      (session.agents.includes("*") ? undefined : session.agents[0]),
   );
   if (!isAgentAllowed(session, agentId)) {
     const defaultAgentId = resolveDefaultAgentId();
@@ -308,7 +313,10 @@ export function buildPluginUrl(
   path: string,
   searchParams?: Record<string, string | undefined>,
 ): string {
-  const url = new URL(`/api/channels/nextchat/${path.replace(/^\/+/, "")}`, `${gatewayUrl}/`);
+  const url = new URL(
+    `/api/channels/nextchat/${path.replace(/^\/+/, "")}`,
+    `${gatewayUrl}/`,
+  );
   for (const [key, value] of Object.entries(searchParams ?? {})) {
     if (value?.trim()) {
       url.searchParams.set(key, value.trim());
@@ -317,7 +325,9 @@ export function buildPluginUrl(
   return url.toString();
 }
 
-export async function readRouteJson<T = RequestConfig>(req: NextRequest): Promise<T> {
+export async function readRouteJson<T = RequestConfig>(
+  req: NextRequest,
+): Promise<T> {
   try {
     return (await req.json()) as T;
   } catch {
@@ -383,17 +393,18 @@ export async function loadOpenClawCatalog(
     if (!agents.some((agent) => agent.id === defaultAgentId)) {
       agents.unshift({ id: defaultAgentId, name: defaultAgentId });
     }
-    const accounts = Object.entries(parsed.channels?.nextchat?.accounts ?? {}).map(
-      ([accountId, accountConfig]) => ({
-        id: accountId,
-        enabled: accountConfig?.enabled,
-      }),
-    );
+    const accounts = Object.entries(
+      parsed.channels?.nextchat?.accounts ?? {},
+    ).map(([accountId, accountConfig]) => ({
+      id: accountId,
+      enabled: accountConfig?.enabled,
+    }));
     return {
       defaultAgentId,
       agents,
       models: [...modelMap.values()],
-      accounts: accounts.length > 0 ? accounts : [{ id: "default", enabled: true }],
+      accounts:
+        accounts.length > 0 ? accounts : [{ id: "default", enabled: true }],
     };
   } catch {
     return {

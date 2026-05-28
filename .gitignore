@@ -55,3 +55,7 @@ masks.json
 
 # mcp config
 app/mcp/mcp_config.json
+
+# private operations docs
+docs/private/
+docs/openclaw-nextchat-*.md

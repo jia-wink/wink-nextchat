@@ -13,21 +13,23 @@ Wink NextChat is a browser chat UI wired to a private OpenClaw gateway. It keeps
 
 ## OpenClaw Access Model
 
-Normal visitors can use the app in guest mode and configure their own API keys. OpenClaw mode requires login.
+Normal visitors can use the app in guest mode and configure their own API keys. OpenClaw mode requires login. Configure OpenClaw UI accounts with `OPENCLAW_AUTH_USERS`; no real username or password is stored in the source code.
 
-Built-in development accounts:
+Example account mapping:
 
 | Username | Password | Access |
 | --- | --- | --- |
-| `admin` | `openclaw-admin` | all OpenClaw agents |
-| `tarot` | `openclaw-tarot` | `tarot` agent only |
+| `admin` | `replace-me` | all OpenClaw agents |
+| `tarot` | `replace-me-too` | `tarot` agent only |
+| `chat` | `replace-me-three` | `chat` agent only |
 
-For production, override these with `OPENCLAW_AUTH_USERS`:
+Set them with `OPENCLAW_AUTH_USERS`:
 
 ```bash
 OPENCLAW_AUTH_USERS='[
   {"username":"admin","password":"replace-me","agents":["*"]},
-  {"username":"tarot","password":"replace-me-too","agents":["tarot"]}
+  {"username":"tarot","password":"replace-me-too","agents":["tarot"]},
+  {"username":"chat","password":"replace-me-three","agents":["chat"]}
 ]'
 ```
 
@@ -39,7 +41,7 @@ cp .env.openclaw.production.template .env.local
 yarn dev
 ```
 
-Edit `.env.local` before starting if your OpenClaw gateway is not running on the defaults.
+Edit `.env.local` before starting if your OpenClaw gateway is not running on the defaults. Add `OPENCLAW_AUTH_USERS` locally before logging in to OpenClaw.
 
 ## Important Environment Variables
 
