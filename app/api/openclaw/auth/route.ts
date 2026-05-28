@@ -10,6 +10,7 @@ import {
 } from "../shared";
 import {
   createOpenClawDeviceId,
+  type OpenClawDeviceMetadata,
   logoutOpenClawPresence,
   touchOpenClawPresence,
 } from "../presence-store";
@@ -24,9 +25,11 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const body = await readRouteJson<{ username?: string; password?: string }>(
-    req,
-  );
+  const body = await readRouteJson<{
+    username?: string;
+    password?: string;
+    device?: OpenClawDeviceMetadata;
+  }>(req);
   const session = authenticateOpenClawUser(
     body.username?.trim() ?? "",
     body.password ?? "",
@@ -48,7 +51,12 @@ export async function POST(req: NextRequest) {
     agents: session.agents,
   });
   const deviceId = readOpenClawDeviceId(req) ?? createOpenClawDeviceId();
-  await touchOpenClawPresence({ req, session, deviceId }).catch((error) => {
+  await touchOpenClawPresence({
+    req,
+    session,
+    deviceId,
+    device: body.device,
+  }).catch((error) => {
     console.warn("[OpenClaw Presence] failed to record login", error);
   });
   response.cookies.set(

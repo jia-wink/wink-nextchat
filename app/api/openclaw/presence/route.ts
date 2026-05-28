@@ -3,13 +3,16 @@ import {
   OPENCLAW_DEVICE_COOKIE,
   readOpenClawAuthSession,
   readOpenClawDeviceId,
+  readRouteJson,
 } from "../shared";
 import {
   createOpenClawDeviceId,
+  type OpenClawDeviceMetadata,
   touchOpenClawPresence,
 } from "../presence-store";
 
 export async function POST(req: NextRequest) {
+  const body = await readRouteJson<{ device?: OpenClawDeviceMetadata }>(req);
   const session = readOpenClawAuthSession(req);
   if (!session) {
     return NextResponse.json(
@@ -23,6 +26,7 @@ export async function POST(req: NextRequest) {
     req,
     session,
     deviceId,
+    device: body.device,
   })
     .then(() => true)
     .catch((error) => {

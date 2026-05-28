@@ -25,10 +25,10 @@ function formatDate(value?: string) {
   return date.toLocaleString();
 }
 
-function summarizeDevice(userAgent: string) {
+function parseFromUserAgent(userAgent: string) {
   const source = userAgent || "Unknown device";
   const os = /Mac OS X|Macintosh/i.test(source)
-    ? "Mac"
+    ? "macOS"
     : /Windows/i.test(source)
     ? "Windows"
     : /Android/i.test(source)
@@ -37,7 +37,7 @@ function summarizeDevice(userAgent: string) {
     ? "iOS"
     : /Linux/i.test(source)
     ? "Linux"
-    : "Device";
+    : "未知系统";
   const browser = /Edg\//i.test(source)
     ? "Edge"
     : /Chrome\//i.test(source)
@@ -46,8 +46,27 @@ function summarizeDevice(userAgent: string) {
     ? "Safari"
     : /Firefox\//i.test(source)
     ? "Firefox"
-    : "Browser";
-  return `${os} ${browser}`;
+    : "未知浏览器";
+  const device = /iPhone/i.test(source)
+    ? "iPhone"
+    : /iPad/i.test(source)
+    ? "iPad"
+    : /Macintosh|Mac OS X/i.test(source)
+    ? "Mac"
+    : /Windows/i.test(source)
+    ? "Windows PC"
+    : /Android/i.test(source)
+    ? "Android 设备"
+    : "未知设备";
+  return { device, os, browser };
+}
+
+function summarizeDevice(device: OpenClawPresenceDevice) {
+  const parsed = parseFromUserAgent(device.userAgent);
+  const model = device.deviceModel || parsed.device;
+  const os = device.platform || parsed.os;
+  const browser = device.browser || parsed.browser;
+  return `${model}（${os} ${browser}）`;
 }
 
 function DeviceRow(props: { device: OpenClawPresenceDevice }) {
@@ -61,21 +80,21 @@ function DeviceRow(props: { device: OpenClawPresenceDevice }) {
           }`}
         />
         <div>
-          <div className={styles["device-name"]}>
-            {summarizeDevice(device.userAgent)}
-          </div>
+          <div className={styles["device-name"]}>{summarizeDevice(device)}</div>
           <div className={styles["device-agent"]}>{device.userAgent}</div>
         </div>
       </div>
       <div className={styles["device-cell"]}>
         <span>{device.ip || "-"}</span>
-        <small>{device.location || "Unknown location"}</small>
+        <small>{device.location || "未知位置"}</small>
       </div>
       <div className={styles["device-cell"]}>
         <span>{formatDate(device.lastSeenAt)}</span>
-        <small>First seen {formatDate(device.createdAt)}</small>
+        <small>首次登录 {formatDate(device.createdAt)}</small>
       </div>
-      <div className={styles["device-status"]}>{device.status}</div>
+      <div className={styles["device-status"]}>
+        {device.status === "online" ? "在线" : "离线"}
+      </div>
     </div>
   );
 }
@@ -85,6 +104,7 @@ export function OpenClawAdminPage() {
   const [data, setData] = useState<OpenClawAdminSessionsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selectedAccount, setSelectedAccount] = useState("all");
 
   const load = async () => {
     setLoading(true);
@@ -113,14 +133,27 @@ export function OpenClawAdminPage() {
       devices: accounts.reduce((sum, account) => sum + account.totalCount, 0),
     };
   }, [data]);
+  const visibleDevices = useMemo(() => {
+    const accounts = data?.accounts ?? [];
+    const selectedAccounts =
+      selectedAccount === "all"
+        ? accounts
+        : accounts.filter((account) => account.username === selectedAccount);
+    return selectedAccounts.flatMap((account) =>
+      account.devices.map((device) => ({
+        ...device,
+        username: account.username,
+      })),
+    );
+  }, [data, selectedAccount]);
 
   return (
     <ErrorBoundary>
       <div className="window-header" data-tauri-drag-region>
         <div className="window-header-title">
-          <div className="window-header-main-title">OpenClaw Monitor</div>
+          <div className="window-header-main-title">OpenClaw 登录监控</div>
           <div className="window-header-sub-title">
-            Updated {formatDate(data?.generatedAt)}
+            更新于 {formatDate(data?.generatedAt)}
           </div>
         </div>
         <div className="window-actions">
@@ -146,57 +179,67 @@ export function OpenClawAdminPage() {
         <div className={styles["summary-strip"]}>
           <div>
             <span>{totals.online}</span>
-            <small>Online devices</small>
+            <small>在线设备</small>
           </div>
           <div>
             <span>{totals.accounts}</span>
-            <small>Accounts</small>
+            <small>账号数</small>
           </div>
           <div>
             <span>{totals.devices}</span>
-            <small>Known devices</small>
+            <small>已记录设备</small>
           </div>
         </div>
 
         {error && <div className={styles["state-panel"]}>{error}</div>}
         {!error && loading && !data && (
-          <div className={styles["state-panel"]}>Loading sessions...</div>
+          <div className={styles["state-panel"]}>正在加载登录记录...</div>
         )}
         {!error && data && data.accounts.length === 0 && (
-          <div className={styles["state-panel"]}>No OpenClaw logins yet.</div>
+          <div className={styles["state-panel"]}>
+            还没有 OpenClaw 登录记录。
+          </div>
         )}
 
-        <div className={styles["account-list"]}>
-          {data?.accounts.map((account) => (
-            <section
-              className={styles["account-section"]}
-              key={account.username}
-            >
-              <div className={styles["account-header"]}>
-                <div>
-                  <h2>{account.username}</h2>
-                  <p>
-                    {account.onlineCount} online / {account.totalCount} devices
-                  </p>
-                </div>
-                <span className={styles["account-badge"]}>
-                  {account.onlineCount > 0 ? "active" : "idle"}
-                </span>
+        {data && data.accounts.length > 0 && (
+          <section className={styles["session-panel"]}>
+            <div className={styles["session-toolbar"]}>
+              <div>
+                <h2>设备列表</h2>
+                <p>
+                  {selectedAccount === "all" ? "全部账号" : selectedAccount}，
+                  共 {visibleDevices.length} 台设备
+                </p>
               </div>
-              <div className={styles["device-table"]}>
-                <div className={styles["device-heading"]}>
-                  <span>Device</span>
-                  <span>IP / Location</span>
-                  <span>Activity</span>
-                  <span>Status</span>
-                </div>
-                {account.devices.map((device) => (
-                  <DeviceRow device={device} key={device.deviceId} />
+              <select
+                aria-label="选择账号"
+                value={selectedAccount}
+                onChange={(event) =>
+                  setSelectedAccount(event.currentTarget.value)
+                }
+              >
+                <option value="all">全部账号</option>
+                {data.accounts.map((account) => (
+                  <option value={account.username} key={account.username}>
+                    {account.username}（{account.onlineCount}/
+                    {account.totalCount}）
+                  </option>
                 ))}
+              </select>
+            </div>
+            <div className={styles["device-table"]}>
+              <div className={styles["device-heading"]}>
+                <span>设备</span>
+                <span>IP / 位置</span>
+                <span>活跃时间</span>
+                <span>状态</span>
               </div>
-            </section>
-          ))}
-        </div>
+              {visibleDevices.map((device) => (
+                <DeviceRow device={device} key={device.deviceId} />
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </ErrorBoundary>
   );

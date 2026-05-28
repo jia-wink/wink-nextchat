@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import clsx from "clsx";
 
 import styles from "./openclaw-auth-modal.module.scss";
 import { IconButton } from "./button";
 import { Modal, PasswordInput, showToast } from "./ui-lib";
 import Locale from "../locales";
+import { Theme, useAppConfig } from "../store";
 
 type OpenClawAuthMode = "login" | "guest";
 
@@ -12,10 +14,27 @@ export function OpenClawAuthModal(props: {
   onGuest: () => void;
   onLogin: (username: string, password: string) => Promise<void>;
 }) {
+  const config = useAppConfig();
   const [mode, setMode] = useState<OpenClawAuthMode>("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [systemDark, setSystemDark] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemDark(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  const isDark =
+    config.theme === Theme.Dark ||
+    (config.theme === Theme.Auto && systemDark) ||
+    (typeof document !== "undefined" &&
+      (document.body.classList.contains("dark") ||
+        document.documentElement.classList.contains("dark")));
 
   const submit = async () => {
     if (mode === "guest") {
@@ -42,16 +61,17 @@ export function OpenClawAuthModal(props: {
       <Modal
         title="OpenClaw Access"
         onClose={props.onClose}
-        className={styles.modal}
+        className={clsx(styles.modal, isDark && styles["modal-dark"])}
       >
-        <div className={styles["openclaw-auth"]}>
+        <div className={clsx(styles["openclaw-auth"], isDark && styles.dark)}>
           <div className={styles.hero}>
             <div className={styles["hero-row"]}>
               <div className={styles.mark}>OC</div>
               <div>
                 <div className={styles.title}>连接你的 OpenClaw Agent</div>
                 <div className={styles.subtitle}>
-                  登录后可以进入授权 agent；游客模式会保留 NextChat 原本的模型与 API Key 功能。
+                  登录后可以进入授权 agent；游客模式会保留 NextChat 原本的模型与
+                  API Key 功能。
                 </div>
               </div>
             </div>
@@ -124,7 +144,8 @@ export function OpenClawAuthModal(props: {
                 <div>
                   <div className={styles["guest-title"]}>继续使用 NextChat</div>
                   <div className={styles["guest-copy"]}>
-                    游客模式不会连接你的 OpenClaw agent，仍可使用自己的 API Key 和其他平台模型。
+                    游客模式不会连接你的 OpenClaw agent，仍可使用自己的 API Key
+                    和其他平台模型。
                   </div>
                 </div>
               </div>
@@ -137,8 +158,8 @@ export function OpenClawAuthModal(props: {
                 loading
                   ? "Loading..."
                   : mode === "guest"
-                    ? "进入游客模式"
-                    : Locale.UI.Confirm
+                  ? "进入游客模式"
+                  : Locale.UI.Confirm
               }
               type="primary"
               onClick={submit}

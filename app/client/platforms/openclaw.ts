@@ -60,6 +60,11 @@ export type OpenClawPresenceDevice = {
   ip: string;
   location: string;
   userAgent: string;
+  deviceModel?: string;
+  platform?: string;
+  platformVersion?: string;
+  browser?: string;
+  browserVersion?: string;
   createdAt: string;
   lastSeenAt: string;
   loggedOutAt?: string;
@@ -177,6 +182,69 @@ export function toOpenClawLlmModels(
   }));
 }
 
+type ClientDeviceMetadata = {
+  model?: string;
+  platform?: string;
+  platformVersion?: string;
+  browser?: string;
+  browserVersion?: string;
+  userAgent?: string;
+};
+
+function pickBrowserFromBrands(
+  brands?: Array<{ brand?: string; version?: string }>,
+): Pick<ClientDeviceMetadata, "browser" | "browserVersion"> {
+  const candidates = brands ?? [];
+  const browser = candidates.find(
+    (brand) =>
+      brand.brand &&
+      !/not[ .]?a[ .]?brand|chromium/i.test(brand.brand) &&
+      brand.brand !== "Google Chrome",
+  );
+  const fallback = candidates.find((brand) => brand.brand === "Google Chrome");
+  const selected = browser ?? fallback;
+  return {
+    browser: selected?.brand,
+    browserVersion: selected?.version,
+  };
+}
+
+async function getClientDeviceMetadata(): Promise<ClientDeviceMetadata> {
+  if (typeof navigator === "undefined") {
+    return {};
+  }
+
+  const metadata: ClientDeviceMetadata = {
+    userAgent: navigator.userAgent,
+  };
+  const userAgentData = (navigator as any).userAgentData;
+  if (!userAgentData?.getHighEntropyValues) {
+    return metadata;
+  }
+
+  try {
+    const highEntropy = await userAgentData.getHighEntropyValues([
+      "model",
+      "platform",
+      "platformVersion",
+      "fullVersionList",
+    ]);
+    const browser = pickBrowserFromBrands(
+      highEntropy.fullVersionList ?? userAgentData.brands,
+    );
+    return {
+      ...metadata,
+      model: highEntropy.model,
+      platform: highEntropy.platform,
+      platformVersion: highEntropy.platformVersion,
+      browser: browser.browser,
+      browserVersion: browser.browserVersion,
+    };
+  } catch {
+    return metadata;
+  }
+}
+
 export async function getOpenClawAuthState(): Promise<OpenClawAuthState> {
   const response = await fetch(resolveBridgePath(OpenClaw.AuthPath), {
     method: "GET",
@@ -196,7 +264,11 @@ export async function loginOpenClaw(
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({
+      username,
+      password,
+      device: await getClientDeviceMetadata(),
+    }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -214,6 +286,10 @@ export async function logoutOpenClaw(): Promise<void> {
 export async function heartbeatOpenClawPresence(): Promise<void> {
   await fetch(resolveBridgePath("presence"), {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ device: await getClientDeviceMetadata() }),
   });
 }
 

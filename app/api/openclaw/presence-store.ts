@@ -11,8 +11,17 @@ export const OPENCLAW_ONLINE_WINDOW_MS = 5 * 60 * 1000;
 
 const LOCATION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const LOCATION_TIMEOUT_MS = 10 * 1000;
-const UNKNOWN_LOCATION = "Unknown location";
-const LOCAL_LOCATION = "Local network";
+const UNKNOWN_LOCATION = "未知位置";
+const LOCAL_LOCATION = "本地网络";
+
+export type OpenClawDeviceMetadata = {
+  model?: string;
+  platform?: string;
+  platformVersion?: string;
+  browser?: string;
+  browserVersion?: string;
+  userAgent?: string;
+};
 
 export type OpenClawPresenceDevice = {
   deviceId: string;
@@ -21,6 +30,11 @@ export type OpenClawPresenceDevice = {
   ip: string;
   location: string;
   userAgent: string;
+  deviceModel?: string;
+  platform?: string;
+  platformVersion?: string;
+  browser?: string;
+  browserVersion?: string;
   createdAt: string;
   lastSeenAt: string;
   loggedOutAt?: string;
@@ -125,21 +139,104 @@ function countryName(region?: string): string | undefined {
   if (!value) {
     return undefined;
   }
+  const translated = translateLocationPart(value);
+  if (translated !== value) {
+    return translated;
+  }
   if (value.length !== 2) {
     return value;
   }
   try {
-    return new Intl.DisplayNames(["en"], { type: "region" }).of(value) || value;
+    return (
+      new Intl.DisplayNames(["zh-CN"], { type: "region" }).of(value) || value
+    );
   } catch {
     return value;
   }
 }
 
+function translateLocationPart(value?: string): string | undefined {
+  const text = value?.trim();
+  if (!text) {
+    return undefined;
+  }
+  const map: Record<string, string> = {
+    China: "中国",
+    "Hong Kong": "中国香港",
+    Hongkong: "中国香港",
+    Macao: "中国澳门",
+    Macau: "中国澳门",
+    Taiwan: "中国台湾",
+    Guangdong: "广东",
+    Guangzhou: "广州",
+    Shenzhen: "深圳",
+    Dongguan: "东莞",
+    Foshan: "佛山",
+    Zhuhai: "珠海",
+    Beijing: "北京",
+    Shanghai: "上海",
+    Tianjin: "天津",
+    Chongqing: "重庆",
+    Zhejiang: "浙江",
+    Hangzhou: "杭州",
+    Jiangsu: "江苏",
+    Nanjing: "南京",
+    Suzhou: "苏州",
+    Sichuan: "四川",
+    Chengdu: "成都",
+    Hubei: "湖北",
+    Wuhan: "武汉",
+    Hunan: "湖南",
+    Changsha: "长沙",
+    Fujian: "福建",
+    Fuzhou: "福州",
+    Xiamen: "厦门",
+    Shandong: "山东",
+    Qingdao: "青岛",
+    Jinan: "济南",
+    Henan: "河南",
+    Zhengzhou: "郑州",
+    Shaanxi: "陕西",
+    Xian: "西安",
+    "Xi'an": "西安",
+    Guangxi: "广西",
+    Nanning: "南宁",
+    Yunnan: "云南",
+    Kunming: "昆明",
+    Guizhou: "贵州",
+    Guiyang: "贵阳",
+    Hainan: "海南",
+    Haikou: "海口",
+    Sanya: "三亚",
+    Hebei: "河北",
+    Shanxi: "山西",
+    Liaoning: "辽宁",
+    Jilin: "吉林",
+    Heilongjiang: "黑龙江",
+    Anhui: "安徽",
+    Jiangxi: "江西",
+    Inner: "内蒙古",
+    Singapore: "新加坡",
+    Kowloon: "九龙",
+  };
+  return map[text] || text;
+}
+
 function joinLocation(parts: Array<string | undefined>): string {
   return parts
-    .map((part) => part?.trim())
+    .map((part) => translateLocationPart(part))
     .filter(Boolean)
     .join(", ");
+}
+
+function localizeStoredLocation(location: string): string {
+  if (!location || location === "Unknown location") {
+    return UNKNOWN_LOCATION;
+  }
+  if (location === "Local network") {
+    return LOCAL_LOCATION;
+  }
+  return joinLocation(location.split(","));
 }
 
 async function fetchJsonWithTimeout(url: string) {
@@ -163,7 +260,7 @@ async function locateIp(ip: string): Promise<string> {
 
   try {
     const payload = await fetchJsonWithTimeout(
-      `https://ip-api.globecul.com/json/${encodeURIComponent(ip)}`,
+      `https://ip-api.globecul.com/json/${encodeURIComponent(ip)}?lang=zh-CN`,
     );
     const location = joinLocation([
       payload?.city,
@@ -209,7 +306,7 @@ async function resolveLocation(
     cached &&
     Date.now() - new Date(cached.resolvedAt).getTime() < LOCATION_CACHE_TTL_MS
   ) {
-    return cached.location;
+    return localizeStoredLocation(cached.location);
   }
 
   const location = await locateIp(ip);
@@ -228,13 +325,27 @@ export async function touchOpenClawPresence(params: {
   req: NextRequest;
   session: OpenClawAuthSession;
   deviceId: string;
+  device?: OpenClawDeviceMetadata;
 }) {
   await mutatePresenceFile(async (data) => {
     const now = new Date().toISOString();
     const ip = getRequestIp(params.req);
     const location = await resolveLocation(data, ip);
     const userAgent =
-      params.req.headers.get("user-agent")?.trim() || "Unknown device";
+      params.device?.userAgent?.trim() ||
+      params.req.headers.get("user-agent")?.trim() ||
+      "Unknown device";
+    const deviceModel =
+      params.device?.model?.trim() ||
+      params.req.headers.get("sec-ch-ua-model")?.replaceAll('"', "").trim() ||
+      undefined;
+    const platform =
+      params.device?.platform?.trim() ||
+      params.req.headers
+        .get("sec-ch-ua-platform")
+        ?.replaceAll('"', "")
+        .trim() ||
+      undefined;
     const existing = data.devices.find(
       (device) => device.deviceId === params.deviceId,
     );
@@ -245,6 +356,11 @@ export async function touchOpenClawPresence(params: {
       existing.ip = ip || existing.ip || "";
       existing.location = location;
       existing.userAgent = userAgent;
+      existing.deviceModel = deviceModel;
+      existing.platform = platform;
+      existing.platformVersion = params.device?.platformVersion?.trim();
+      existing.browser = params.device?.browser?.trim();
+      existing.browserVersion = params.device?.browserVersion?.trim();
       existing.lastSeenAt = now;
       delete existing.loggedOutAt;
     } else {
@@ -255,6 +371,11 @@ export async function touchOpenClawPresence(params: {
         ip,
         location,
         userAgent,
+        deviceModel,
+        platform,
+        platformVersion: params.device?.platformVersion?.trim(),
+        browser: params.device?.browser?.trim(),
+        browserVersion: params.device?.browserVersion?.trim(),
         createdAt: now,
         lastSeenAt: now,
       });
@@ -295,6 +416,7 @@ export async function getOpenClawAdminSessions(): Promise<OpenClawAdminSessionsR
       now - lastSeen <= OPENCLAW_ONLINE_WINDOW_MS;
     const nextDevice: AdminDevice = {
       ...device,
+      location: localizeStoredLocation(device.location),
       status: online ? "online" : "offline",
     };
     const list = grouped.get(device.username) ?? [];
