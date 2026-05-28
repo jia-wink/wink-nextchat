@@ -164,7 +164,9 @@ function buildClientLabel(): string | undefined {
 
 function formatSessionTimestamp(date: Date): string {
   const pad = (value: number) => value.toString().padStart(2, "0");
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(
+    date.getDate(),
+  )} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function buildDefaultSessionTopic(): string {
@@ -292,17 +294,25 @@ function isOpenClawManagedContext(
 }
 
 function isEmptyAssistantContent(message: ChatMessage): boolean {
-  return typeof message.content === "string" && message.content.trim().length === 0;
+  return (
+    typeof message.content === "string" && message.content.trim().length === 0
+  );
 }
 
-function findActiveOpenClawAssistant(messages: ChatMessage[]): ChatMessage | undefined {
+function findActiveOpenClawAssistant(
+  messages: ChatMessage[],
+): ChatMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message.role !== "assistant") continue;
     if (!message.openclawAggregated) continue;
     if (!message.openclawBatching) return undefined;
     if (message.status === "failed") return undefined;
-    if (message.streaming || message.status === "streaming" || message.status === "pending") {
+    if (
+      message.streaming ||
+      message.status === "streaming" ||
+      message.status === "pending"
+    ) {
       return message;
     }
     if (isEmptyAssistantContent(message)) {
@@ -399,7 +409,9 @@ function flushOpenClawBatch(sessionId: string) {
         store.onNewMessage(botMessage, session);
       } else if (isEmptyAssistantContent(botMessage)) {
         store.updateTargetSession(session, (draft) => {
-          draft.messages = draft.messages.filter((item) => item.id !== botMessage.id);
+          draft.messages = draft.messages.filter(
+            (item) => item.id !== botMessage.id,
+          );
         });
       }
       ChatControllerPool.remove(session.id, botMessage.id);
@@ -422,6 +434,15 @@ function flushOpenClawBatch(sessionId: string) {
     },
     onError(error) {
       const isAborted = error.message?.includes?.("aborted");
+      if (
+        botMessage.status === "completed" &&
+        !isEmptyAssistantContent(botMessage)
+      ) {
+        botMessage.openclawBatching = false;
+        botMessage.openclawPendingRequests = 0;
+        ChatControllerPool.remove(session.id, botMessage.id);
+        return;
+      }
       botMessage.content +=
         "\n\n" +
         prettyObject({
@@ -454,14 +475,12 @@ function enqueueOpenClawBatch(params: {
   botMessage: ChatMessage;
 }) {
   const existing = pendingOpenClawBatches.get(params.session.id);
-  const batch =
-    existing ??
-    {
-      session: params.session,
-      modelConfig: params.modelConfig,
-      botMessage: params.botMessage,
-      userMessages: [],
-    };
+  const batch = existing ?? {
+    session: params.session,
+    modelConfig: params.modelConfig,
+    botMessage: params.botMessage,
+    userMessages: [],
+  };
 
   batch.session = params.session;
   batch.modelConfig = params.modelConfig;
@@ -693,8 +712,8 @@ export const useChatStore = createPersistStore(
         let mContent: string | MultimodalContent[] = isMcpResponse
           ? content
           : isOpenClawChannel
-            ? content
-            : fillTemplateWith(content, modelConfig);
+          ? content
+          : fillTemplateWith(content, modelConfig);
 
         if (!isMcpResponse && attachImages && attachImages.length > 0) {
           mContent = [
@@ -739,7 +758,9 @@ export const useChatStore = createPersistStore(
             content: mContent,
           };
           if (isOpenClawChannel) {
-            const activeBotMessage = findActiveOpenClawAssistant(session.messages);
+            const activeBotMessage = findActiveOpenClawAssistant(
+              session.messages,
+            );
             if (activeBotMessage) {
               activeBotMessage.streaming = true;
               activeBotMessage.status = "streaming";
@@ -754,7 +775,10 @@ export const useChatStore = createPersistStore(
             }
           }
 
-          session.messages = session.messages.concat([savedUserMessage, botMessage]);
+          session.messages = session.messages.concat([
+            savedUserMessage,
+            botMessage,
+          ]);
         });
 
         if (isOpenClawChannel) {
@@ -793,7 +817,11 @@ export const useChatStore = createPersistStore(
             botMessage.openclawPendingRequests = isOpenClawChannel
               ? pendingRequests
               : undefined;
-            if (isOpenClawChannel && !message && botMessage.status === "completed") {
+            if (
+              isOpenClawChannel &&
+              !message &&
+              botMessage.status === "completed"
+            ) {
               ChatControllerPool.remove(session.id, botMessage.id);
               return;
             }

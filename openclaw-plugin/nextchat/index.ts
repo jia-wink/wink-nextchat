@@ -53,6 +53,17 @@ function writeDone(res: ServerResponse) {
   }
 }
 
+function startSseHeartbeat(res: ServerResponse): ReturnType<typeof setInterval> {
+  if (!res.writableEnded) {
+    res.write(": keepalive\n\n");
+  }
+  return setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(": keepalive\n\n");
+    }
+  }, 15000);
+}
+
 function writeNamedSse(res: ServerResponse, event: string, payload: unknown) {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -155,6 +166,7 @@ async function handleMessageRequest(req: IncomingMessage, res: ServerResponse) {
     setSseHeaders(res);
   }
 
+  const heartbeat = stream ? startSseHeartbeat(res) : undefined;
   const result = await dispatchNextChatMessage({
     body,
     stream,
@@ -166,6 +178,10 @@ async function handleMessageRequest(req: IncomingMessage, res: ServerResponse) {
           });
         }
       : undefined,
+  }).finally(() => {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+    }
   });
 
   if (!result) {
@@ -230,11 +246,7 @@ async function handleEventsRequest(req: IncomingMessage, res: ServerResponse) {
       writeNamedSse(res, event.type, event);
     }
   });
-  const heartbeat = setInterval(() => {
-    if (!res.writableEnded) {
-      res.write(": keepalive\n\n");
-    }
-  }, 15000);
+  const heartbeat = startSseHeartbeat(res);
   req.on("close", () => {
     clearInterval(heartbeat);
     unsubscribe();

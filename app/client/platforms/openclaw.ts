@@ -1,9 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { fetchEventSource, EventStreamContentType } from "@fortaine/fetch-event-source";
+import {
+  fetchEventSource,
+  EventStreamContentType,
+} from "@fortaine/fetch-event-source";
 import { getClientConfig } from "@/app/config/client";
-import { ApiPath, OpenClaw, REQUEST_TIMEOUT_MS, ServiceProvider } from "@/app/constant";
+import {
+  ApiPath,
+  OpenClaw,
+  REQUEST_TIMEOUT_MS,
+  ServiceProvider,
+} from "@/app/constant";
 import {
   createMessage,
   type ChatMessage,
@@ -77,7 +85,9 @@ export type OpenClawCatalogModel = { id: string; name?: string };
 export type OpenClawCatalogAccount = { id: string; enabled?: boolean };
 const OPENCLAW_DEFAULT_MODEL_ID = "default";
 const OPENCLAW_EVENT_RECONNECT_DELAY_MS = 1000;
-const OPENCLAW_RECOVERABLE_SESSION_STATUSES = new Set([401, 403, 404, 409, 410]);
+const OPENCLAW_RECOVERABLE_SESSION_STATUSES = new Set([
+  401, 403, 404, 409, 410,
+]);
 
 export function normalizeOpenClawModels(
   models: OpenClawAgentResponse["models"],
@@ -85,8 +95,7 @@ export function normalizeOpenClawModels(
   const normalized = new Map<string, OpenClawCatalogModel>();
 
   for (const model of models ?? []) {
-    const modelId =
-      typeof model === "string" ? model.trim() : model.id?.trim();
+    const modelId = typeof model === "string" ? model.trim() : model.id?.trim();
     if (!modelId) continue;
 
     normalized.set(modelId, {
@@ -118,7 +127,9 @@ export function normalizeOpenClawAccounts(
   return [...normalized.values()];
 }
 
-export function toOpenClawLlmModels(models: OpenClawCatalogModel[]): LLMModel[] {
+export function toOpenClawLlmModels(
+  models: OpenClawCatalogModel[],
+): LLMModel[] {
   const resolvedModels =
     models.length > 0
       ? models
@@ -210,14 +221,15 @@ function toPlainMessages(messages: ChatOptions["messages"]): RequestMessage[] {
     content:
       typeof message.content === "string"
         ? message.content
-        : (message.content.filter(
-            (part): part is MultimodalContent =>
-              Boolean(part?.type === "text" ? part.text : part?.image_url?.url),
+        : (message.content.filter((part): part is MultimodalContent =>
+            Boolean(part?.type === "text" ? part.text : part?.image_url?.url),
           ) as MultimodalContent[]),
   }));
 }
 
-function getLatestUserTurn(messages: ChatOptions["messages"]): ChatOptions["messages"] {
+function getLatestUserTurn(
+  messages: ChatOptions["messages"],
+): ChatOptions["messages"] {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     if (messages[i]?.role === "user") {
       return [messages[i]];
@@ -237,7 +249,9 @@ function detectBrowserLabel(userAgent: string): string | undefined {
 }
 
 function detectDeviceLabel(userAgent: string): string | undefined {
-  const androidMatch = userAgent.match(/Android[\d.\s]*;\s*([^;()]+?)(?:\s+Build\/|\))/i);
+  const androidMatch = userAgent.match(
+    /Android[\d.\s]*;\s*([^;()]+?)(?:\s+Build\/|\))/i,
+  );
   if (androidMatch?.[1]?.trim()) {
     return androidMatch[1].trim();
   }
@@ -302,12 +316,17 @@ function createOpenClawAssistantMessage(
     serverMessageIds: [messageId],
     status: "streaming",
     timestamp: timestamp ?? new Date().toISOString(),
-    date: timestamp ? new Date(timestamp).toLocaleString() : new Date().toLocaleString(),
+    date: timestamp
+      ? new Date(timestamp).toLocaleString()
+      : new Date().toLocaleString(),
     openclawAggregated: true,
   });
 }
 
-function hasOpenClawServerMessageId(message: ChatMessage, messageId: string): boolean {
+function hasOpenClawServerMessageId(
+  message: ChatMessage,
+  messageId: string,
+): boolean {
   return (
     message.serverMessageId === messageId ||
     message.serverMessageIds?.includes(messageId) === true
@@ -326,7 +345,9 @@ function findOpenClawAssistantMessage(
   messages: ChatMessage[],
   messageId: string,
 ): ChatMessage | undefined {
-  return messages.find((message) => hasOpenClawServerMessageId(message, messageId));
+  return messages.find((message) =>
+    hasOpenClawServerMessageId(message, messageId),
+  );
 }
 
 function findActiveOpenClawAggregateMessage(
@@ -374,6 +395,10 @@ function isTrackedOutboundMessage(
   );
 }
 
+function isProactiveOpenClawEvent(event: OpenClawEvent): boolean {
+  return event.meta?.proactive === true;
+}
+
 function applyOpenClawEventToSession(
   session: ChatSession,
   event: OpenClawEvent,
@@ -383,7 +408,10 @@ function applyOpenClawEventToSession(
   const messageId = event.messageId?.trim();
 
   if (event.type === "message.accepted") {
-    if (!messageId || event.meta?.source !== "outbound") {
+    const isOutbound = event.meta?.source === "outbound";
+    const isProactive = isProactiveOpenClawEvent(event);
+
+    if (!messageId || (!isOutbound && !isProactive)) {
       return;
     }
 
@@ -391,7 +419,9 @@ function applyOpenClawEventToSession(
     chatStore.updateTargetSession(session, (draft) => {
       const existing =
         findOpenClawAssistantMessage(draft.messages, messageId) ??
-        findActiveOpenClawAggregateMessage(draft.messages);
+        (isProactive
+          ? undefined
+          : findActiveOpenClawAggregateMessage(draft.messages));
       if (existing) {
         addOpenClawServerMessageId(existing, messageId);
         if (existing.status === "completed" || existing.status === "failed") {
@@ -410,7 +440,10 @@ function applyOpenClawEventToSession(
     return;
   }
 
-  if (!messageId || !isTrackedOutboundMessage(trackedMessageIds, session, messageId)) {
+  if (
+    !messageId ||
+    !isTrackedOutboundMessage(trackedMessageIds, session, messageId)
+  ) {
     return;
   }
 
@@ -418,12 +451,18 @@ function applyOpenClawEventToSession(
   chatStore.updateTargetSession(session, (draft) => {
     let message = findOpenClawAssistantMessage(draft.messages, messageId);
     if (!message) {
-      const activeAggregate = findActiveOpenClawAggregateMessage(draft.messages);
+      const activeAggregate = findActiveOpenClawAggregateMessage(
+        draft.messages,
+      );
       if (activeAggregate) {
         addOpenClawServerMessageId(activeAggregate, messageId);
         message = activeAggregate;
       } else {
-        message = createOpenClawAssistantMessage(draft, messageId, event.timestamp);
+        message = createOpenClawAssistantMessage(
+          draft,
+          messageId,
+          event.timestamp,
+        );
         draft.messages.push(message);
       }
     }
@@ -452,7 +491,9 @@ function applyOpenClawEventToSession(
 
     if (event.type === "message.delta") {
       if (event.delta) {
-        message.content = `${typeof message.content === "string" ? message.content : ""}${event.delta}`;
+        message.content = `${
+          typeof message.content === "string" ? message.content : ""
+        }${event.delta}`;
       }
       message.streaming = true;
       message.status = "streaming";
@@ -521,11 +562,10 @@ export function useOpenClawEventSync(session: ChatSession) {
 
   useEffect(() => {
     trackedMessageIdsRef.current = new Set(
-      session.messages
-        .flatMap((message) => [
-          ...(message.serverMessageId ? [message.serverMessageId] : []),
-          ...(message.serverMessageIds ?? []),
-        ]),
+      session.messages.flatMap((message) => [
+        ...(message.serverMessageId ? [message.serverMessageId] : []),
+        ...(message.serverMessageIds ?? []),
+      ]),
     );
   }, [session.id, session.messages]);
 
@@ -698,9 +738,7 @@ function isLegacyOpenClawSessionKey(
 function resolveSessionAgentId(session: ChatSession): string {
   const accessStore = useAccessStore.getState();
   const candidate =
-    session.openclaw?.agentId?.trim() ||
-    accessStore.openclawAgentId ||
-    "main";
+    session.openclaw?.agentId?.trim() || accessStore.openclawAgentId || "main";
   const allowedAgents = accessStore.openclawAllowedAgents ?? [];
   if (
     allowedAgents.length > 0 &&
@@ -789,6 +827,14 @@ function buildOpenClawSessionMetadata(session: ChatSession): {
   };
 }
 
+function isRecoverableOpenClawDispatchError(status: number, message: string) {
+  if ([502, 504, 524].includes(status)) {
+    return true;
+  }
+
+  return /gateway (time-out|timeout)|bad gateway/i.test(message);
+}
+
 export class OpenClawApi implements LLMApi {
   async chat(options: ChatOptions): Promise<void> {
     const accessStore = useAccessStore.getState();
@@ -821,7 +867,10 @@ export class OpenClawApi implements LLMApi {
     let finished = false;
     const controller = new AbortController();
     options.onController?.(controller);
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS * 5);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      REQUEST_TIMEOUT_MS * 5,
+    );
 
     const finish = () => {
       if (finished) return;
@@ -848,6 +897,10 @@ export class OpenClawApi implements LLMApi {
           try {
             message = prettyObject(await res.clone().json());
           } catch {}
+          if (isRecoverableOpenClawDispatchError(res.status, message)) {
+            finish();
+            return;
+          }
           throw new Error(message || `OpenClaw request failed (${res.status})`);
         }
         if (contentType.startsWith("application/json")) {
@@ -878,7 +931,10 @@ export class OpenClawApi implements LLMApi {
           return;
         }
         const payload = JSON.parse(msg.data) as {
-          choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
+          choices?: Array<{
+            delta?: { content?: string };
+            finish_reason?: string | null;
+          }>;
         };
         const chunk = payload.choices?.[0]?.delta?.content ?? "";
         if (!chunk) {
@@ -898,7 +954,9 @@ export class OpenClawApi implements LLMApi {
   }
 
   async speech(_options: SpeechOptions): Promise<ArrayBuffer> {
-    throw new Error("OpenClaw speech is not implemented in the NextChat bridge");
+    throw new Error(
+      "OpenClaw speech is not implemented in the NextChat bridge",
+    );
   }
 
   async usage(): Promise<LLMUsage> {
