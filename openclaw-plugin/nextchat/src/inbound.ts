@@ -1,13 +1,16 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
+  createInboundDebouncer,
   dispatchInboundDirectDmWithRuntime,
   resolveEnvelopeFormatOptions,
+  resolveInboundDebounceMs,
+  shouldDebounceTextInbound,
 } from "openclaw/plugin-sdk/channel-inbound";
-import {
-  readSessionUpdatedAt,
-  resolveStorePath,
-} from "openclaw/plugin-sdk/config-runtime";
+import { readSessionUpdatedAt, resolveStorePath } from "openclaw/plugin-sdk/config-runtime";
 import { recordInboundSession } from "openclaw/plugin-sdk/conversation-runtime";
 import { finalizeInboundContext, dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
@@ -23,7 +26,6 @@ import {
   upsertNextChatSession,
 } from "./runtime.js";
 import type {
-  NextChatChannelConfig,
   NextChatInboundAttachment,
   NextChatInboundMessage,
   NextChatMessageRequest,
@@ -32,14 +34,8 @@ import type {
 } from "./types.js";
 
 const NEXTCHAT_CHANNEL = "nextchat";
-const NEXTCHAT_GENERIC_TITLES = new Set([
-  "新的聊天",
-  "新对话",
-  "new chat",
-  "new conversation",
-  "untitled",
-  "untitled chat",
-]);
+const FINAL_REPLY_WAIT_MS = 90_000;
+const FINAL_REPLY_POLL_MS = 1_000;
 
 type EnvelopeFormatOptions = ReturnType<typeof resolveEnvelopeFormatOptions>;
 type NextChatDispatchResult = {
@@ -54,6 +50,7 @@ type PreparedNextChatDispatch = {
   rawBody: string;
   bodyForAgent: string;
   clientMessageId: string;
+  hasMedia: boolean;
   stream: boolean;
   writeDelta?: (delta: string) => void;
 };
@@ -61,13 +58,6 @@ type QueuedNextChatDispatch = {
   prepared: PreparedNextChatDispatch;
   resolve: (result: NextChatDispatchResult) => void;
 };
-type NextChatAggregationBuffer = {
-  items: QueuedNextChatDispatch[];
-  timeout: ReturnType<typeof setTimeout> | null;
-  debounceMs: number;
-};
-
-const aggregationBuffers = new Map<string, NextChatAggregationBuffer>();
 
 function sanitizeEnvelopeHeaderPart(value: string): string {
   return value
@@ -152,19 +142,44 @@ const nextchatRuntime = {
 };
 
 function createSessionBoundRuntime(session: NextChatSessionRecord) {
-  if (!session.explicitAgentId) {
-    return nextchatRuntime;
-  }
+  const routedRuntime = session.explicitAgentId
+    ? {
+        channel: {
+          ...nextchatRuntime.channel,
+          routing: {
+            resolveAgentRoute: () => ({
+              agentId: session.agentId,
+              sessionKey: session.sessionKey,
+              accountId: session.accountId,
+            }),
+          },
+        },
+      }
+    : nextchatRuntime;
 
   return {
     channel: {
-      ...nextchatRuntime.channel,
-      routing: {
-        resolveAgentRoute: () => ({
-          agentId: session.agentId,
-          sessionKey: session.sessionKey,
-          accountId: session.accountId,
-        }),
+      ...routedRuntime.channel,
+      reply: {
+        ...routedRuntime.channel.reply,
+        dispatchReplyWithBufferedBlockDispatcher: async (params: any) => {
+          const configuredBeforeDeliver = params.dispatcherOptions?.beforeDeliver;
+          return routedRuntime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+            ...params,
+            dispatcherOptions: {
+              ...params.dispatcherOptions,
+              beforeDeliver: async (payload: any, info: { kind?: string }) => {
+                const deliverPayload = configuredBeforeDeliver
+                  ? await configuredBeforeDeliver(payload, info)
+                  : payload;
+                if (!deliverPayload || info?.kind === "block") {
+                  return null;
+                }
+                return deliverPayload;
+              },
+            },
+          });
+        },
       },
     },
   };
@@ -251,209 +266,143 @@ function buildAssistantMarkdown(params: { text?: string; mediaUrls?: string[] })
   return `${text}\n\n${mediaBlock}`;
 }
 
-function resolveMs(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractTextContent(content: unknown): { text: string; hasToolCall: boolean } {
+  if (typeof content === "string") {
+    return { text: content.trim(), hasToolCall: false };
+  }
+  if (!Array.isArray(content)) {
+    return { text: "", hasToolCall: false };
+  }
+  const texts: string[] = [];
+  let hasToolCall = false;
+  for (const part of content) {
+    if (!part || typeof part !== "object") {
+      continue;
+    }
+    const item = part as Record<string, unknown>;
+    if (item.type === "toolCall") {
+      hasToolCall = true;
+      continue;
+    }
+    if (item.type === "text" && typeof item.text === "string" && item.text.trim()) {
+      texts.push(item.text.trim());
+    }
+  }
+  return { text: texts.join("\n\n").trim(), hasToolCall };
+}
+
+function parseMessageTimeMs(row: Record<string, unknown>, message: Record<string, unknown>): number {
+  if (typeof message.timestamp === "number") {
+    return message.timestamp;
+  }
+  if (typeof row.timestamp === "string") {
+    const parsed = Date.parse(row.timestamp);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 0;
+}
+
+function isUsableChannelReply(text: string | undefined): boolean {
+  const normalized = text?.trim() ?? "";
+  if (!normalized) {
+    return false;
+  }
+  return !/^(now let me|let me|i need to|the user is|i should|i will)\b/i.test(normalized);
+}
+
+function resolveSessionFileFromIndex(indexFile: string, sessionKey: string): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(indexFile, "utf8")) as Record<string, any>;
+    const direct = raw[sessionKey];
+    if (typeof direct?.sessionFile === "string") {
+      return direct.sessionFile;
+    }
+    const lowered = sessionKey.toLowerCase();
+    for (const [key, value] of Object.entries(raw)) {
+      if (key.toLowerCase() === lowered && typeof value?.sessionFile === "string") {
+        return value.sessionFile;
+      }
+    }
+  } catch {
     return undefined;
   }
-  return Math.max(0, Math.trunc(value));
+  return undefined;
 }
 
-function resolveNextChatConfig(cfg: OpenClawConfig): NextChatChannelConfig {
-  return ((cfg.channels as Record<string, unknown> | undefined)?.nextchat ??
-    {}) as NextChatChannelConfig;
-}
-
-function resolveLegacyNextChatDebounceMs(cfg: OpenClawConfig): number {
-  const inbound = cfg.messages?.inbound;
-  return (
-    resolveMs((inbound?.byChannel as Record<string, unknown> | undefined)?.[NEXTCHAT_CHANNEL]) ??
-    resolveMs(inbound?.debounceMs) ??
-    0
-  );
-}
-
-function resolveNextChatAggregationMs(cfg: OpenClawConfig, agentId: string): number {
-  const nextchat = resolveNextChatConfig(cfg);
-  const aggregation = nextchat.messageAggregation;
-  const legacyMs = resolveLegacyNextChatDebounceMs(cfg);
-  if (!aggregation) {
-    return legacyMs;
-  }
-
-  const agentConfig = aggregation.agents?.[agentId];
-  const shouldAggregate = agentConfig?.aggregateReplies ?? aggregation.enabled ?? true;
-  if (!shouldAggregate) {
-    return 0;
-  }
-  return resolveMs(agentConfig?.debounceMs) ?? resolveMs(aggregation.debounceMs) ?? legacyMs;
-}
-
-function withNextChatCoreDebounceDisabled(cfg: OpenClawConfig): OpenClawConfig {
-  const messages = cfg.messages ?? {};
-  const inbound = messages.inbound ?? {};
-  return {
-    ...cfg,
-    messages: {
-      ...messages,
-      inbound: {
-        ...inbound,
-        byChannel: {
-          ...(inbound.byChannel ?? {}),
-          [NEXTCHAT_CHANNEL]: 0,
-        },
-      },
-    },
-  } as OpenClawConfig;
-}
-
-function buildAggregationKey(session: NextChatSessionRecord): string {
-  return [
-    NEXTCHAT_CHANNEL,
-    session.accountId || "default",
-    session.agentId || "main",
-    session.sessionId,
-  ].join(":");
-}
-
-function mergePreparedDispatches(items: QueuedNextChatDispatch[]): PreparedNextChatDispatch {
-  const latest = items[items.length - 1].prepared;
-  const rawBody = items
-    .map((item) => item.prepared.rawBody.trim())
-    .filter(Boolean)
-    .join("\n\n");
-  const bodyForAgent = items
-    .map((item) => item.prepared.bodyForAgent.trim())
-    .filter(Boolean)
-    .join("\n\n");
-  const writeDeltaCallbacks = items
-    .map((item) => item.prepared.writeDelta)
-    .filter((callback): callback is (delta: string) => void => Boolean(callback));
-
-  return {
-    ...latest,
-    rawBody: rawBody || latest.rawBody,
-    bodyForAgent: bodyForAgent || latest.bodyForAgent,
-    writeDelta: writeDeltaCallbacks.length
-      ? (delta) => {
-          for (const callback of writeDeltaCallbacks) {
-            callback(delta);
-          }
-        }
-      : undefined,
-  };
-}
-
-async function flushAggregationBuffer(key: string, buffer: NextChatAggregationBuffer): Promise<void> {
-  if (aggregationBuffers.get(key) === buffer) {
-    aggregationBuffers.delete(key);
-  }
-  if (buffer.timeout) {
-    clearTimeout(buffer.timeout);
-    buffer.timeout = null;
-  }
-  const items = buffer.items.splice(0);
-  if (items.length === 0) {
-    return;
-  }
-  const result = await dispatchPreparedNextChatMessage(mergePreparedDispatches(items));
-  for (const item of items) {
-    item.resolve(result);
-  }
-}
-
-function scheduleAggregationFlush(key: string, buffer: NextChatAggregationBuffer): void {
-  if (buffer.timeout) {
-    clearTimeout(buffer.timeout);
-  }
-  buffer.timeout = setTimeout(() => {
-    void flushAggregationBuffer(key, buffer);
-  }, buffer.debounceMs);
-  buffer.timeout.unref?.();
-}
-
-function enqueuePreparedNextChatMessage(
-  prepared: PreparedNextChatDispatch,
-  debounceMs: number,
-): Promise<NextChatDispatchResult> {
-  if (!(debounceMs > 0)) {
-    return dispatchPreparedNextChatMessage(prepared);
-  }
-
-  const key = buildAggregationKey(prepared.session);
-  return new Promise((resolve) => {
-    const existing = aggregationBuffers.get(key);
-    if (existing) {
-      existing.items.push({ prepared, resolve });
-      existing.debounceMs = debounceMs;
-      scheduleAggregationFlush(key, existing);
-      return;
-    }
-
-    const buffer: NextChatAggregationBuffer = {
-      items: [{ prepared, resolve }],
-      timeout: null,
-      debounceMs,
-    };
-    aggregationBuffers.set(key, buffer);
-    scheduleAggregationFlush(key, buffer);
-  });
-}
-
-function normalizeSessionTitle(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
-
-function isGenericSessionTitle(value: string | undefined): boolean {
-  const normalized = normalizeSessionTitle(value);
-  if (!normalized) {
-    return true;
-  }
-  return NEXTCHAT_GENERIC_TITLES.has(normalized.toLowerCase());
-}
-
-function formatSessionCreatedAt(createdAt: string): string {
-  const date = new Date(createdAt);
-  if (Number.isNaN(date.getTime())) {
-    return createdAt;
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
-}
-
-function buildGeneratedSessionTitle(params: {
-  clientLabel?: string;
-  createdAt: string;
-}): string {
-  const deviceLabel = normalizeSessionTitle(params.clientLabel) ?? "NextChat";
-  return `${deviceLabel} · ${formatSessionCreatedAt(params.createdAt)}`;
-}
-
-function resolveSessionTitle(params: {
-  title?: string;
-  clientLabel?: string;
-  createdAt: string;
-  fallbackTitle?: string;
+function readLatestFinalAssistantText(params: {
+  indexFile: string;
+  sessionKey: string;
+  afterMs: number;
 }): string | undefined {
-  const preferred = normalizeSessionTitle(params.title);
-  if (!isGenericSessionTitle(preferred)) {
-    return preferred;
+  const sessionFile = resolveSessionFileFromIndex(params.indexFile, params.sessionKey);
+  if (!sessionFile) {
+    return undefined;
   }
-
-  const fallback = normalizeSessionTitle(params.fallbackTitle);
-  if (fallback && !isGenericSessionTitle(fallback)) {
-    return fallback;
+  let latest: { timeMs: number; text: string } | undefined;
+  try {
+    for (const line of readFileSync(sessionFile, "utf8").split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue;
+      }
+      let row: Record<string, unknown>;
+      try {
+        row = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (row.type !== "message" || !row.message || typeof row.message !== "object") {
+        continue;
+      }
+      const message = row.message as Record<string, unknown>;
+      if (message.role !== "assistant" || message.proactiveReply) {
+        continue;
+      }
+      const timeMs = parseMessageTimeMs(row, message);
+      if (timeMs < params.afterMs) {
+        continue;
+      }
+      const { text, hasToolCall } = extractTextContent(message.content);
+      if (hasToolCall || !isUsableChannelReply(text)) {
+        continue;
+      }
+      if (!latest || timeMs >= latest.timeMs) {
+        latest = { timeMs, text };
+      }
+    }
+  } catch {
+    return undefined;
   }
+  return latest?.text;
+}
 
-  return buildGeneratedSessionTitle({
-    clientLabel: params.clientLabel,
-    createdAt: params.createdAt,
-  });
+async function waitForFinalAssistantText(params: {
+  indexFile?: string;
+  sessionKey: string;
+  afterMs: number;
+  timeoutMs?: number;
+}): Promise<string | undefined> {
+  if (!params.indexFile) {
+    return undefined;
+  }
+  const deadline = Date.now() + (params.timeoutMs ?? FINAL_REPLY_WAIT_MS);
+  while (Date.now() <= deadline) {
+    const text = readLatestFinalAssistantText({
+      indexFile: params.indexFile,
+      sessionKey: params.sessionKey,
+      afterMs: params.afterMs,
+    });
+    if (text) {
+      return text;
+    }
+    await sleep(FINAL_REPLY_POLL_MS);
+  }
+  return undefined;
 }
 
 function buildSessionRecord(params: {
@@ -465,7 +414,6 @@ function buildSessionRecord(params: {
   ).trim();
   const accountId = normalizeAccountId(params.request.accountId);
   const explicitAgentId = normalizeExplicitAgentId(params.request.agentId);
-  const createdAt = new Date().toISOString();
   const route = explicitAgentId
     ? {
         agentId: explicitAgentId,
@@ -495,18 +443,116 @@ function buildSessionRecord(params: {
     agentId: route.agentId,
     accountId: route.accountId ?? accountId,
     channel: "nextchat",
-    title: resolveSessionTitle({
-      title: params.request.title,
-      clientLabel: params.request.clientLabel,
-      createdAt,
-    }),
-    clientLabel: normalizeSessionTitle(params.request.clientLabel),
+    title: params.request.title?.trim() || undefined,
     model: params.request.model?.trim() || undefined,
     explicitAgentId: Boolean(explicitAgentId),
-    createdAt,
-    updatedAt: createdAt,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 }
+
+function resolveActivityFilePath(): string {
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(os.homedir(), ".openclaw");
+  return path.join(stateDir, "runtime", "proactive_reply_activity.json");
+}
+
+function writeJsonAtomic(filePath: string, value: unknown): void {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(value, null, 2), "utf8");
+  renameSync(tmpPath, filePath);
+}
+
+function markNextChatUserActivity(session: NextChatSessionRecord): void {
+  const filePath = resolveActivityFilePath();
+  let state: any = { version: 1, sessions: {} };
+  try {
+    state = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    state = { version: 1, sessions: {} };
+  }
+  if (!state || typeof state !== "object" || !state.sessions || typeof state.sessions !== "object") {
+    state = { version: 1, sessions: {} };
+  }
+  const now = Date.now();
+  const entry = {
+    channel: NEXTCHAT_CHANNEL,
+    agentId: session.agentId,
+    accountId: session.accountId,
+    sessionId: session.sessionId,
+    sessionKey: session.sessionKey,
+    lastUserActivityAt: now,
+    updatedAt: now,
+  };
+  state.version = 1;
+  state.sessions[session.sessionKey] = entry;
+  state.sessions[session.sessionKey.toLowerCase()] = entry;
+  writeJsonAtomic(filePath, state);
+}
+
+function buildDebounceKey(prepared: PreparedNextChatDispatch): string {
+  return prepared.session.sessionKey;
+}
+
+function mergeQueuedNextChatDispatches(items: QueuedNextChatDispatch[]): PreparedNextChatDispatch {
+  const latest = items[items.length - 1].prepared;
+  return {
+    ...latest,
+    rawBody: items
+      .map((item) => item.prepared.rawBody)
+      .filter(Boolean)
+      .join("\n\n"),
+    bodyForAgent: items
+      .map((item) => item.prepared.bodyForAgent)
+      .filter(Boolean)
+      .join("\n\n"),
+    hasMedia: items.some((item) => item.prepared.hasMedia),
+  };
+}
+
+function createNextChatDebounceErrorResult(
+  item: QueuedNextChatDispatch,
+  error: unknown,
+): NextChatDispatchResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    session: item.prepared.session,
+    content: `[OpenClaw error] ${message.trim() || "NextChat inbound debounce failed."}`,
+    mediaUrls: [],
+    error: message,
+  };
+}
+
+const nextchatInboundDebouncer = createInboundDebouncer<QueuedNextChatDispatch>({
+  debounceMs: 0,
+  buildKey: (item) => buildDebounceKey(item.prepared),
+  resolveDebounceMs: (item) =>
+    resolveInboundDebounceMs({
+      cfg: item.prepared.cfg,
+      channel: NEXTCHAT_CHANNEL,
+    }),
+  shouldDebounce: (item) =>
+    shouldDebounceTextInbound({
+      text: item.prepared.rawBody || item.prepared.bodyForAgent,
+      cfg: item.prepared.cfg,
+      hasMedia: item.prepared.hasMedia,
+    }),
+  serializeImmediate: true,
+  onFlush: async (items) => {
+    if (items.length === 0) {
+      return;
+    }
+    const result = await dispatchPreparedNextChatMessage(mergeQueuedNextChatDispatches(items));
+    for (const item of items) {
+      item.resolve(result);
+    }
+  },
+  onError: (error, items) => {
+    for (const item of items) {
+      item.resolve(createNextChatDebounceErrorResult(item, error));
+    }
+  },
+});
 
 export async function handleNextChatSessionRequest(
   req: IncomingMessage,
@@ -535,18 +581,22 @@ async function dispatchPreparedNextChatMessage(
   prepared: PreparedNextChatDispatch,
 ): Promise<NextChatDispatchResult> {
   const { cfg, session, clientMessageId } = prepared;
+  const startedAtMs = Date.now();
+  let deliveredText = "";
+  let deliveredMediaUrls: string[] = [];
   try {
     startNextChatReply({
       sessionKey: session.sessionKey,
       sessionId: session.sessionId,
+      messageId: clientMessageId,
       meta: {
         agentId: session.agentId,
         accountId: session.accountId,
       },
     });
 
-    await dispatchInboundDirectDmWithRuntime({
-      cfg: withNextChatCoreDebounceDisabled(cfg),
+    const dispatchResult = await dispatchInboundDirectDmWithRuntime({
+      cfg,
       runtime: createSessionBoundRuntime(session),
       channel: NEXTCHAT_CHANNEL,
       channelLabel: "NextChat",
@@ -572,9 +622,16 @@ async function dispatchPreparedNextChatMessage(
           mediaUrls: payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []),
         });
         const mediaUrls = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
+        if (delta) {
+          deliveredText = [deliveredText, delta].filter(Boolean).join("\n\n");
+        }
+        if (mediaUrls.length) {
+          deliveredMediaUrls = [...deliveredMediaUrls, ...mediaUrls];
+        }
         appendNextChatReplyDelta({
           sessionKey: session.sessionKey,
           sessionId: session.sessionId,
+          messageId: clientMessageId,
           delta,
           mediaUrls,
         });
@@ -586,6 +643,7 @@ async function dispatchPreparedNextChatMessage(
         failNextChatReply({
           sessionKey: session.sessionKey,
           sessionId: session.sessionId,
+          messageId: clientMessageId,
           error: `Failed to record session: ${String(error)}`,
         });
       },
@@ -593,19 +651,41 @@ async function dispatchPreparedNextChatMessage(
         failNextChatReply({
           sessionKey: session.sessionKey,
           sessionId: session.sessionId,
+          messageId: clientMessageId,
           error: String(error),
         });
       },
     });
 
+    if (!isUsableChannelReply(deliveredText)) {
+      const recoveredText = await waitForFinalAssistantText({
+        indexFile: dispatchResult.storePath,
+        sessionKey: session.sessionKey,
+        afterMs: startedAtMs,
+      });
+      if (recoveredText && recoveredText.trim() !== deliveredText.trim()) {
+        deliveredText = recoveredText.trim();
+        appendNextChatReplyDelta({
+          sessionKey: session.sessionKey,
+          sessionId: session.sessionId,
+          messageId: clientMessageId,
+          delta: deliveredText,
+        });
+        if (prepared.writeDelta) {
+          prepared.writeDelta(deliveredText);
+        }
+      }
+    }
+
     const reply = completeNextChatReply({
       sessionKey: session.sessionKey,
       sessionId: session.sessionId,
+      messageId: clientMessageId,
     });
     return {
       session,
-      content: reply?.content ?? "",
-      mediaUrls: reply?.mediaUrls ?? [],
+      content: reply?.content ?? deliveredText,
+      mediaUrls: reply?.mediaUrls ?? deliveredMediaUrls,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -613,6 +693,7 @@ async function dispatchPreparedNextChatMessage(
     failNextChatReply({
       sessionKey: session.sessionKey,
       sessionId: session.sessionId,
+      messageId: clientMessageId,
       error: normalizedMessage,
     });
     if (prepared.stream && prepared.writeDelta) {
@@ -646,13 +727,7 @@ export async function dispatchNextChatMessage(params: {
         request: params.body,
       });
     session.model = params.body.model?.trim() || session.model;
-    session.clientLabel = normalizeSessionTitle(params.body.clientLabel) || session.clientLabel;
-    session.title = resolveSessionTitle({
-      title: params.body.title,
-      clientLabel: session.clientLabel,
-      createdAt: session.createdAt,
-      fallbackTitle: session.title,
-    });
+    session.title = params.body.title?.trim() || session.title;
     upsertNextChatSession(session);
 
     const userMessage = getLatestUserMessage(params.body.messages);
@@ -666,18 +741,22 @@ export async function dispatchNextChatMessage(params: {
       mediaUrls: attachmentUrls,
     });
     const clientMessageId = String(params.body.clientMessageId ?? randomUUID()).trim();
-    return await enqueuePreparedNextChatMessage(
-      {
-        cfg,
-        session,
-        rawBody: normalized.rawBody || bodyForAgent,
-        bodyForAgent,
-        clientMessageId,
-        stream: params.stream,
-        writeDelta: params.writeDelta,
-      },
-      resolveNextChatAggregationMs(cfg, session.agentId),
-    );
+    markNextChatUserActivity(session);
+    return await new Promise<NextChatDispatchResult>((resolve) => {
+      void nextchatInboundDebouncer.enqueue({
+        prepared: {
+          cfg,
+          session,
+          rawBody: normalized.rawBody || bodyForAgent,
+          bodyForAgent,
+          clientMessageId,
+          hasMedia: attachmentUrls.length > 0,
+          stream: params.stream,
+          writeDelta: params.writeDelta,
+        },
+        resolve,
+      });
+    });
   } catch (error) {
     console.error("[nextchat] dispatchNextChatMessage failed:", error);
     return null;

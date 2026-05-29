@@ -306,8 +306,13 @@ function findActiveOpenClawAssistant(
     const message = messages[i];
     if (message.role !== "assistant") continue;
     if (!message.openclawAggregated) continue;
-    if (!message.openclawBatching) return undefined;
     if (message.status === "failed") return undefined;
+    if (
+      message.openclawBatching ||
+      (message.openclawPendingRequests ?? 0) > 0
+    ) {
+      return message;
+    }
     if (
       message.streaming ||
       message.status === "streaming" ||
@@ -323,6 +328,16 @@ function findActiveOpenClawAssistant(
   return undefined;
 }
 
+function isEmptyOpenClawAssistantLoader(message: ChatMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    Boolean(message.openclawAggregated) &&
+    isEmptyAssistantContent(message) &&
+    message.status !== "completed" &&
+    message.status !== "failed"
+  );
+}
+
 type PendingOpenClawBatch = {
   session: ChatSession;
   modelConfig: ModelConfig;
@@ -332,6 +347,7 @@ type PendingOpenClawBatch = {
 };
 
 const pendingOpenClawBatches = new Map<string, PendingOpenClawBatch>();
+const OPENCLAW_RECOVERABLE_DISPATCH_ERROR = "OpenClawRecoverableDispatchError";
 
 function combineOpenClawUserMessages(messages: ChatMessage[]): ChatMessage {
   const latest = messages[messages.length - 1];
@@ -432,6 +448,17 @@ function flushOpenClawBatch(sessionId: string) {
     },
     onError(error) {
       const isAborted = error.message?.includes?.("aborted");
+      if (error.name === OPENCLAW_RECOVERABLE_DISPATCH_ERROR) {
+        botMessage.openclawBatching = false;
+        botMessage.openclawPendingRequests = 1;
+        botMessage.streaming = true;
+        botMessage.status = "streaming";
+        store.updateTargetSession(session, (draft) => {
+          draft.messages = draft.messages.concat();
+        });
+        ChatControllerPool.remove(session.id, botMessage.id);
+        return;
+      }
       if (
         botMessage.status === "completed" &&
         !isEmptyAssistantContent(botMessage)
@@ -764,7 +791,11 @@ export const useChatStore = createPersistStore(
                 (activeBotMessage.openclawPendingRequests ?? 0) + 1;
               botMessage = activeBotMessage;
               session.messages = session.messages
-                .filter((message) => message.id !== activeBotMessage.id)
+                .filter(
+                  (message) =>
+                    message.id !== activeBotMessage.id &&
+                    !isEmptyOpenClawAssistantLoader(message),
+                )
                 .concat([savedUserMessage, activeBotMessage]);
               return;
             }

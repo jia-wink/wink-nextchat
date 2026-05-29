@@ -56,16 +56,75 @@ const runtime = {
   lastEventAt: undefined as string | undefined,
 };
 
+function createReplyKey(input: { sessionKey: string; messageId: string }): string {
+  return `${input.sessionKey}\u0000${input.messageId}`;
+}
+
+function resolveActiveReply(input: {
+  sessionKey: string;
+  messageId?: string;
+}): ActiveReplyState | undefined {
+  if (input.messageId) {
+    return runtime.activeReplies.get(createReplyKey({
+      sessionKey: input.sessionKey,
+      messageId: input.messageId,
+    }));
+  }
+  for (const reply of runtime.activeReplies.values()) {
+    if (reply.sessionKey === input.sessionKey) {
+      return reply;
+    }
+  }
+  return undefined;
+}
+
+function deleteActiveReply(reply: ActiveReplyState | undefined): void {
+  if (!reply) {
+    return;
+  }
+  runtime.activeReplies.delete(createReplyKey({
+    sessionKey: reply.sessionKey,
+    messageId: reply.messageId,
+  }));
+}
+
 function resolveSessionKey(input: { sessionKey?: string; sessionId?: string }): string | undefined {
   const explicit = input.sessionKey?.trim();
   if (explicit) {
+    if (runtime.sessionsByKey.has(explicit)) {
+      return explicit;
+    }
+    const lowered = explicit.toLowerCase();
+    for (const key of runtime.sessionsByKey.keys()) {
+      if (key.toLowerCase() === lowered) {
+        return key;
+      }
+    }
     return explicit;
   }
   const sessionId = input.sessionId?.trim();
   if (!sessionId) {
     return undefined;
   }
-  return runtime.sessionKeyById.get(sessionId);
+  const direct = runtime.sessionKeyById.get(sessionId);
+  if (direct) {
+    return direct;
+  }
+  const lowered = sessionId.toLowerCase();
+  for (const [knownSessionId, key] of runtime.sessionKeyById.entries()) {
+    if (knownSessionId.toLowerCase() === lowered) {
+      return key;
+    }
+  }
+  for (const [key, state] of runtime.sessionsByKey.entries()) {
+    if (
+      state.session.sessionId.toLowerCase() === lowered ||
+      key.toLowerCase().endsWith(`:${lowered}`)
+    ) {
+      return key;
+    }
+  }
+  return undefined;
 }
 
 export function upsertNextChatSession(session: NextChatSessionRecord): SessionState {
@@ -83,6 +142,7 @@ export function upsertNextChatSession(session: NextChatSessionRecord): SessionSt
   state.session = mergedSession;
   runtime.sessionsByKey.set(session.sessionKey, state);
   runtime.sessionKeyById.set(session.sessionId, session.sessionKey);
+  runtime.sessionKeyById.set(session.sessionId.toLowerCase(), session.sessionKey);
   return state;
 }
 
@@ -151,15 +211,16 @@ export function subscribeNextChatEvents(
 export function startNextChatReply(input: {
   sessionKey: string;
   sessionId: string;
+  messageId?: string;
   meta?: Record<string, unknown>;
 }): ActiveReplyState {
   const reply: ActiveReplyState = {
     sessionKey: input.sessionKey,
-    messageId: randomUUID(),
+    messageId: input.messageId?.trim() || randomUUID(),
     content: "",
     mediaUrls: [],
   };
-  runtime.activeReplies.set(input.sessionKey, reply);
+  runtime.activeReplies.set(createReplyKey(reply), reply);
   appendNextChatEvent(
     { sessionKey: input.sessionKey },
     {
@@ -183,10 +244,11 @@ export function startNextChatReply(input: {
 export function appendNextChatReplyDelta(input: {
   sessionKey: string;
   sessionId: string;
+  messageId?: string;
   delta?: string;
   mediaUrls?: string[];
 }): ActiveReplyState | undefined {
-  const reply = runtime.activeReplies.get(input.sessionKey);
+  const reply = resolveActiveReply(input);
   if (!reply) {
     return undefined;
   }
@@ -216,11 +278,12 @@ export function appendNextChatReplyDelta(input: {
 export function failNextChatReply(input: {
   sessionKey: string;
   sessionId: string;
+  messageId?: string;
   error: string;
 }): void {
-  const reply = runtime.activeReplies.get(input.sessionKey);
-  const messageId = reply?.messageId ?? randomUUID();
-  runtime.activeReplies.delete(input.sessionKey);
+  const reply = resolveActiveReply(input);
+  const messageId = reply?.messageId ?? input.messageId ?? randomUUID();
+  deleteActiveReply(reply);
   appendNextChatEvent(
     { sessionKey: input.sessionKey },
     {
@@ -243,12 +306,13 @@ export function failNextChatReply(input: {
 export function completeNextChatReply(input: {
   sessionKey: string;
   sessionId: string;
+  messageId?: string;
 }): ActiveReplyState | undefined {
-  const reply = runtime.activeReplies.get(input.sessionKey);
+  const reply = resolveActiveReply(input);
   if (!reply) {
     return undefined;
   }
-  runtime.activeReplies.delete(input.sessionKey);
+  deleteActiveReply(reply);
   appendNextChatEvent(
     { sessionKey: input.sessionKey },
     {

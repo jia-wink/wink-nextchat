@@ -10,11 +10,18 @@ import {
 } from "./src/inbound.js";
 import {
   appendNextChatEvent,
+  appendNextChatReplyDelta,
+  completeNextChatReply,
   setNextChatRuntime,
   getNextChatRuntimeStats,
+  getNextChatSession,
   listNextChatEvents,
+  listNextChatSessions,
   subscribeNextChatEvents,
+  startNextChatReply,
+  upsertNextChatSession,
 } from "./src/runtime.js";
+import type { NextChatSessionRecord } from "./src/types.js";
 
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown) {
   if (!res.headersSent) {
@@ -51,17 +58,6 @@ function writeDone(res: ServerResponse) {
   if (!res.writableEnded) {
     res.write("data: [DONE]\n\n");
   }
-}
-
-function startSseHeartbeat(res: ServerResponse): ReturnType<typeof setInterval> {
-  if (!res.writableEnded) {
-    res.write(": keepalive\n\n");
-  }
-  return setInterval(() => {
-    if (!res.writableEnded) {
-      res.write(": keepalive\n\n");
-    }
-  }, 15000);
 }
 
 function writeNamedSse(res: ServerResponse, event: string, payload: unknown) {
@@ -106,6 +102,167 @@ function buildOpenAiJsonCompletion(params: { model: string; content: string }) {
       },
     ],
   };
+}
+
+function normalizeText(value: unknown): string | undefined {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || undefined;
+}
+
+function normalizeNextChatId(value: unknown): string | undefined {
+  const text = normalizeText(value);
+  if (!text) {
+    return undefined;
+  }
+  return text.replace(/^nextchat:/i, "");
+}
+
+function resolveSessionFromRuntime(params: {
+  sessionKey?: string;
+  sessionId?: string;
+  target?: string;
+}): NextChatSessionRecord | undefined {
+  const sessionKey = normalizeText(params.sessionKey);
+  if (sessionKey) {
+    const direct = getNextChatSession({ sessionKey });
+    if (direct) {
+      return direct;
+    }
+  }
+  const candidates = [
+    normalizeNextChatId(params.sessionId),
+    normalizeNextChatId(params.target),
+  ].filter((value): value is string => Boolean(value));
+  for (const candidate of candidates) {
+    const direct = getNextChatSession({ sessionId: candidate });
+    if (direct) {
+      return direct;
+    }
+    const lowered = candidate.toLowerCase();
+    const found = listNextChatSessions().find((session) => {
+      return (
+        session.sessionId.toLowerCase() === lowered ||
+        session.sessionKey.toLowerCase() === lowered ||
+        session.sessionKey.toLowerCase().endsWith(`:${lowered}`)
+      );
+    });
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+function parseSessionKey(sessionKey: string): {
+  agentId: string;
+  accountId: string;
+  sessionId: string;
+} | undefined {
+  const parts = sessionKey.split(":");
+  if (parts.length < 5 || parts[0] !== "agent" || parts[2] !== "nextchat") {
+    return undefined;
+  }
+  if (parts[3] === "direct" || parts[3] === "group") {
+    return {
+      agentId: parts[1],
+      accountId: "default",
+      sessionId: parts.slice(4).join(":"),
+    };
+  }
+  return {
+    agentId: parts[1],
+    accountId: parts[3] || "default",
+    sessionId: parts.slice(4).join(":"),
+  };
+}
+
+function ensureProactiveSession(params: Record<string, unknown>): NextChatSessionRecord | undefined {
+  const existing = resolveSessionFromRuntime({
+    sessionKey: normalizeText(params.sessionKey),
+    sessionId: normalizeText(params.sessionId),
+    target: normalizeText(params.target),
+  });
+  if (existing) {
+    return existing;
+  }
+
+  const sessionKey = normalizeText(params.sessionKey);
+  if (!sessionKey) {
+    return undefined;
+  }
+  const parsed = parseSessionKey(sessionKey);
+  if (!parsed) {
+    return undefined;
+  }
+  const accountId = normalizeText(params.accountId) ?? parsed.accountId;
+  const sessionId =
+    normalizeNextChatId(params.sessionId) ??
+    normalizeNextChatId(params.target) ??
+    parsed.sessionId;
+  const now = new Date().toISOString();
+  const session: NextChatSessionRecord = {
+    sessionId,
+    sessionKey,
+    conversationId: sessionKey,
+    agentId: normalizeText(params.agentId) ?? parsed.agentId,
+    accountId,
+    channel: "nextchat",
+    title: normalizeText(params.title),
+    explicitAgentId: Boolean(normalizeText(params.agentId)),
+    createdAt: now,
+    updatedAt: now,
+  };
+  upsertNextChatSession(session);
+  return session;
+}
+
+function registerNextChatGatewayMethods(api: any) {
+  api.registerGatewayMethod("nextchat.send", async ({ params, respond }: any) => {
+    try {
+      const body = (params || {}) as Record<string, unknown>;
+      const content = normalizeText(body.content) ?? normalizeText(body.message);
+      if (!content) {
+        return respond(false, { error: "content or message is required" });
+      }
+      const session = ensureProactiveSession(body);
+      if (!session) {
+        return respond(false, {
+          error: "sessionKey or an active NextChat session is required",
+        });
+      }
+      const reply = startNextChatReply({
+        sessionKey: session.sessionKey,
+        sessionId: session.sessionId,
+        messageId: normalizeText(body.messageId),
+        meta: {
+          agentId: session.agentId,
+          accountId: session.accountId,
+          source: "gateway",
+          proactive: true,
+        },
+      });
+      appendNextChatReplyDelta({
+        sessionKey: session.sessionKey,
+        sessionId: session.sessionId,
+        messageId: reply.messageId,
+        delta: content,
+      });
+      completeNextChatReply({
+        sessionKey: session.sessionKey,
+        sessionId: session.sessionId,
+        messageId: reply.messageId,
+      });
+      respond(true, {
+        ok: true,
+        channel: "nextchat",
+        sessionKey: session.sessionKey,
+        sessionId: session.sessionId,
+        messageId: reply.messageId,
+      });
+    } catch (error: any) {
+      respond(false, { error: error?.message ?? String(error) });
+    }
+  });
 }
 
 async function handleAgentsRequest(req: IncomingMessage, res: ServerResponse) {
@@ -166,7 +323,6 @@ async function handleMessageRequest(req: IncomingMessage, res: ServerResponse) {
     setSseHeaders(res);
   }
 
-  const heartbeat = stream ? startSseHeartbeat(res) : undefined;
   const result = await dispatchNextChatMessage({
     body,
     stream,
@@ -178,10 +334,6 @@ async function handleMessageRequest(req: IncomingMessage, res: ServerResponse) {
           });
         }
       : undefined,
-  }).finally(() => {
-    if (heartbeat) {
-      clearInterval(heartbeat);
-    }
   });
 
   if (!result) {
@@ -246,7 +398,11 @@ async function handleEventsRequest(req: IncomingMessage, res: ServerResponse) {
       writeNamedSse(res, event.type, event);
     }
   });
-  const heartbeat = startSseHeartbeat(res);
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) {
+      res.write(": keepalive\n\n");
+    }
+  }, 15000);
   req.on("close", () => {
     clearInterval(heartbeat);
     unsubscribe();
@@ -308,6 +464,7 @@ export default defineChannelPluginEntry({
   plugin: nextchatPlugin,
   setRuntime: setNextChatRuntime,
   registerFull(api) {
+    registerNextChatGatewayMethods(api);
     api.registerHttpRoute({
       path: "/api/channels/nextchat",
       auth: "plugin",

@@ -119,6 +119,7 @@ const OPENCLAW_EVENT_RECONNECT_DELAY_MS = 1000;
 const OPENCLAW_RECOVERABLE_SESSION_STATUSES = new Set([
   401, 403, 404, 409, 410,
 ]);
+const OPENCLAW_RECOVERABLE_DISPATCH_ERROR = "OpenClawRecoverableDispatchError";
 
 export function normalizeOpenClawModels(
   models: OpenClawAgentResponse["models"],
@@ -485,6 +486,17 @@ function findActiveOpenClawAggregateMessage(
   return undefined;
 }
 
+function isEmptyOpenClawAssistantLoader(message: ChatMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    Boolean(message.openclawAggregated) &&
+    typeof message.content === "string" &&
+    message.content.trim().length === 0 &&
+    message.status !== "completed" &&
+    message.status !== "failed"
+  );
+}
+
 function updateOpenClawConnectionState(
   session: ChatSession,
   status: NonNullable<ChatSession["openclaw"]>["connectionStatus"],
@@ -518,6 +530,13 @@ function isProactiveOpenClawEvent(event: OpenClawEvent): boolean {
   return event.meta?.proactive === true;
 }
 
+function isInboundOpenClawEvent(event: OpenClawEvent): boolean {
+  return (
+    event.meta?.source === undefined &&
+    Boolean(event.meta?.agentId || event.meta?.accountId)
+  );
+}
+
 function applyOpenClawEventToSession(
   session: ChatSession,
   event: OpenClawEvent,
@@ -529,8 +548,9 @@ function applyOpenClawEventToSession(
   if (event.type === "message.accepted") {
     const isOutbound = event.meta?.source === "outbound";
     const isProactive = isProactiveOpenClawEvent(event);
+    const isInbound = isInboundOpenClawEvent(event);
 
-    if (!messageId || (!isOutbound && !isProactive)) {
+    if (!messageId || (!isOutbound && !isProactive && !isInbound)) {
       return;
     }
 
@@ -543,6 +563,11 @@ function applyOpenClawEventToSession(
           : findActiveOpenClawAggregateMessage(draft.messages));
       if (existing) {
         addOpenClawServerMessageId(existing, messageId);
+        draft.messages = draft.messages.filter(
+          (message) =>
+            message.id === existing.id ||
+            !isEmptyOpenClawAssistantLoader(message),
+        );
         if (existing.status === "completed" || existing.status === "failed") {
           return;
         }
@@ -958,6 +983,14 @@ function isRecoverableOpenClawDispatchError(status: number, message: string) {
   return /gateway (time-out|timeout)|bad gateway/i.test(message);
 }
 
+function createRecoverableDispatchError(status: number, message: string) {
+  const error = new Error(
+    message || `OpenClaw dispatch is still pending (${status})`,
+  );
+  error.name = OPENCLAW_RECOVERABLE_DISPATCH_ERROR;
+  return error;
+}
+
 export class OpenClawApi implements LLMApi {
   async chat(options: ChatOptions): Promise<void> {
     const accessStore = useAccessStore.getState();
@@ -1021,8 +1054,7 @@ export class OpenClawApi implements LLMApi {
             message = prettyObject(await res.clone().json());
           } catch {}
           if (isRecoverableOpenClawDispatchError(res.status, message)) {
-            finish();
-            return;
+            throw createRecoverableDispatchError(res.status, message);
           }
           throw new Error(message || `OpenClaw request failed (${res.status})`);
         }
@@ -1070,9 +1102,25 @@ export class OpenClawApi implements LLMApi {
         finish();
       },
       onerror(error) {
+        if (
+          error instanceof Error &&
+          error.name === OPENCLAW_RECOVERABLE_DISPATCH_ERROR
+        ) {
+          options.onError?.(error);
+          controller.abort();
+          clearTimeout(timeoutId);
+          throw error;
+        }
         options.onError?.(error as Error);
         throw error;
       },
+    }).catch((error) => {
+      if (
+        error instanceof Error &&
+        error.name === OPENCLAW_RECOVERABLE_DISPATCH_ERROR
+      ) {
+        return;
+      }
     });
   }
 

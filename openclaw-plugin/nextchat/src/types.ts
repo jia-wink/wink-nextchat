@@ -50,7 +50,6 @@ export type NextChatSessionRecord = {
   accountId: string;
   channel: "nextchat";
   title?: string;
-  clientLabel?: string;
   model?: string;
   explicitAgentId?: boolean;
   createdAt: string;
@@ -96,7 +95,6 @@ export type NextChatSessionRequest = {
   agentId?: string;
   defaultAgentId?: string;
   title?: string;
-  clientLabel?: string;
   model?: string;
 };
 
